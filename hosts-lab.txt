@@ -1,0 +1,10 @@
+127.0.0.1 traefik.lab.local
+127.0.0.1 wordpress.lab.local
+127.0.0.1 mautic.lab.local
+127.0.0.1 n8n.lab.local
+127.0.0.1 minio.lab.local
+127.0.0.1 portainer.lab.local
+127.0.0.1 adminer.lab.local
+127.0.0.1 pgadmin.lab.local
+127.0.0.1 mailhog.lab.local
+127.0.0.1 evolution-api.lab.local
