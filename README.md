@@ -112,8 +112,10 @@ Endereços disponíveis incluem:
 
 ## Persistência e segurança
 
-Todos os bind mounts passam a usar os diretórios escolhidos em `BASE` e
-`DATA`; não há dependência fixa de `/mnt/d/docker`.
+Os arquivos das aplicações e demais bind mounts usam os diretórios escolhidos
+em `BASE` e `DATA`. Os bancos MySQL, MariaDB e PostgreSQL usam volumes Docker
+nomeados para garantir as permissões Unix exigidas pelos bancos, inclusive
+quando o laboratório está localizado em `/mnt` no WSL.
 
 As credenciais presentes nos arquivos são adequadas somente para laboratório.
 Troque senhas, chaves e demais segredos antes de expor qualquer serviço fora

@@ -159,15 +159,21 @@ if should_create_service "traefik"; then
 fi
 
 if should_create_service "wordpress" || should_create_service "wordpress-db"; then
-  mkdir -p "$BASE/wordpress" "$BASE/wordpress/files" "$BASE/wordpress-db"
+  mkdir -p "$BASE/wordpress" "$BASE/wordpress/files" "$BASE/wordpress/secrets" "$BASE/wordpress-db"
+
+  WORDPRESS_DB_PASSWORD_FILE="$BASE/wordpress/secrets/db_password"
+  if [[ ! -f "$WORDPRESS_DB_PASSWORD_FILE" ]]; then
+    printf '%s' 'wordpress123' > "$WORDPRESS_DB_PASSWORD_FILE"
+    chmod 600 "$WORDPRESS_DB_PASSWORD_FILE" 2>/dev/null || true
+  fi
 fi
 
 if should_create_service "mautic" || should_create_service "mautic-db"; then
-  mkdir -p "$BASE/mautic" "$BASE/mautic/files" "$BASE/mautic-db"
+  mkdir -p "$BASE/mautic" "$BASE/mautic-db"
 fi
 
 if should_create_service "n8n" || should_create_service "n8n-db"; then
-  mkdir -p "$BASE/n8n" "$BASE/n8n/data" "$BASE/n8n-db"
+  mkdir -p "$BASE/n8n" "$BASE/n8n/data" "$BASE/n8n/arquivos" "$BASE/n8n-db"
 fi
 
 if should_create_service "redis"; then
@@ -195,22 +201,10 @@ if should_create_service "mailhog"; then
 fi
 
 if should_create_service "evolution-api" || should_create_service "evolution-db"; then
-  mkdir -p "$BASE/evolution-api"
+  mkdir -p "$BASE/evolution-api" "$BASE/evolution-db"
 fi
 
 mkdir -p "$DATA"
-
-if should_create_service "wordpress-db"; then
-  mkdir -p "$DATA/wordpress-db"
-fi
-
-if should_create_service "mautic-db"; then
-  mkdir -p "$DATA/mautic-db"
-fi
-
-if should_create_service "n8n-db"; then
-  mkdir -p "$DATA/n8n-db"
-fi
 
 if should_create_service "redis"; then
   mkdir -p "$DATA/redis"
@@ -228,8 +222,8 @@ if should_create_service "pgadmin"; then
   mkdir -p "$DATA/pgadmin"
 fi
 
-if should_create_service "evolution-api" || should_create_service "evolution-db"; then
-  mkdir -p "$DATA/evolution-api" "$DATA/evolution-db"
+if should_create_service "evolution-api"; then
+  mkdir -p "$DATA/evolution-api"
 fi
 
 docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
@@ -296,10 +290,11 @@ services:
       MYSQL_ROOT_PASSWORD: root123
       MYSQL_DATABASE: wordpress
       MYSQL_USER: wordpress
-      MYSQL_PASSWORD: wordpress123
+      MYSQL_PASSWORD_FILE: /run/secrets/wordpress_db_password
 
     volumes:
-      - $(yaml_path "$DATA/wordpress-db:/var/lib/mysql")
+      - wordpress-db-data:/var/lib/mysql
+      - $(yaml_path "$BASE/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
 
     networks:
       - infra
@@ -308,6 +303,10 @@ networks:
   infra:
     external: true
     name: infra-network
+
+volumes:
+  wordpress-db-data:
+    name: wordpress-db-data
 EOF_WORDPRESS_DB
 fi
 
@@ -329,10 +328,12 @@ services:
       WORDPRESS_DB_HOST: wordpress-db
       WORDPRESS_DB_NAME: wordpress
       WORDPRESS_DB_USER: wordpress
-      WORDPRESS_DB_PASSWORD: wordpress123
+      WORDPRESS_DB_PASSWORD_FILE: /run/secrets/wordpress_db_password
+      WORDPRESS_ENVIRONMENT_TYPE: local
 
     volumes:
       - $(yaml_path "$BASE/wordpress/files:/var/www/html/")
+      - $(yaml_path "$BASE/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
 
     labels:
       - traefik.enable=true
@@ -340,7 +341,9 @@ services:
       - traefik.http.services.wordpress.loadbalancer.server.port=80
 
     networks:
-      - infra
+      infra:
+        aliases:
+          - wordpress.lab.local
 
 networks:
   infra:
@@ -370,7 +373,7 @@ services:
       MYSQL_PASSWORD: mautic123
 
     volumes:
-      - $(yaml_path "$DATA/mautic-db:/var/lib/mysql")
+      - mautic-db-data:/var/lib/mysql
 
     networks:
       - infra
@@ -379,6 +382,10 @@ networks:
   infra:
     external: true
     name: infra-network
+
+volumes:
+  mautic-db-data:
+    name: mautic-db-data
 EOF_MAUTIC_DB
 fi
 
@@ -390,7 +397,7 @@ if should_create_service "mautic"; then
 cat > "$BASE/mautic/docker-compose.yml" <<EOF_MAUTIC
 services:
   mautic:
-    image: mautic/mautic:latest
+    image: mautic/mautic:7.1.2-apache
 
     container_name: mautic
 
@@ -398,12 +405,16 @@ services:
 
     environment:
       MAUTIC_DB_HOST: mautic-db
+      MAUTIC_DB_PORT: "3306"
       MAUTIC_DB_USER: mautic
       MAUTIC_DB_PASSWORD: mautic123
-      MAUTIC_DB_NAME: mautic
+      MAUTIC_DB_DATABASE: mautic
 
     volumes:
-      - $(yaml_path "$BASE/mautic/files:/var/www/html/")
+      - mautic-config-data:/var/www/html/config
+      - mautic-media-files-data:/var/www/html/docroot/media/files
+      - mautic-media-images-data:/var/www/html/docroot/media/images
+      - mautic-logs-data:/var/www/html/var/logs
 
     labels:
       - traefik.enable=true
@@ -417,6 +428,16 @@ networks:
   infra:
     external: true
     name: infra-network
+
+volumes:
+  mautic-config-data:
+    name: mautic-config-data
+  mautic-media-files-data:
+    name: mautic-media-files-data
+  mautic-media-images-data:
+    name: mautic-media-images-data
+  mautic-logs-data:
+    name: mautic-logs-data
 EOF_MAUTIC
 fi
 
@@ -440,7 +461,7 @@ services:
       POSTGRES_PASSWORD: n8n123
 
     volumes:
-      - $(yaml_path "$DATA/n8n-db:/var/lib/postgresql/data")
+      - n8n-db-data:/var/lib/postgresql/data
 
     networks:
       - infra
@@ -449,6 +470,10 @@ networks:
   infra:
     external: true
     name: infra-network
+
+volumes:
+  n8n-db-data:
+    name: n8n-db-data
 EOF_N8N_DB
 fi
 
@@ -471,9 +496,11 @@ services:
       N8N_PROTOCOL: http
       N8N_SECURE_COOKIE: "false"
       WEBHOOK_URL: http://n8n.lab.local/
+      N8N_RESTRICT_FILE_ACCESS_TO: /data/arquivos
 
     volumes:
       - $(yaml_path "$BASE/n8n/data:/home/node/")
+      - $(yaml_path "$BASE/n8n/arquivos:/data/arquivos")
 
     labels:
       - traefik.enable=true
@@ -694,11 +721,11 @@ EOF_PGADMIN
 fi
 
 #############################################
-# EVOLUTION API
+# EVOLUTION DB
 #############################################
 
-if should_create_service "evolution-api" || should_create_service "evolution-db"; then
-cat > "$BASE/evolution-api/docker-compose.yml" <<EOF_EVOLUTION
+if should_create_service "evolution-db"; then
+cat > "$BASE/evolution-db/docker-compose.yml" <<EOF_EVOLUTION_DB
 services:
   evolution-db:
     image: postgres:16-alpine
@@ -711,7 +738,7 @@ services:
       POSTGRES_PASSWORD: postgres123
 
     volumes:
-      - $(yaml_path "$DATA/evolution-db:/var/lib/postgresql/data")
+      - evolution-db-data:/var/lib/postgresql/data
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d evolution"]
@@ -723,14 +750,28 @@ services:
     networks:
       - infra
 
+networks:
+  infra:
+    external: true
+    name: infra-network
+
+volumes:
+  evolution-db-data:
+    name: evolution-db-data
+EOF_EVOLUTION_DB
+fi
+
+#############################################
+# EVOLUTION API
+#############################################
+
+if should_create_service "evolution-api"; then
+cat > "$BASE/evolution-api/docker-compose.yml" <<EOF_EVOLUTION_API
+services:
   evolution-api:
     image: evoapicloud/evolution-api:v2.1.1
     container_name: evolution-api
     restart: unless-stopped
-
-    depends_on:
-      evolution-db:
-        condition: service_healthy
 
     ports:
       - "8080:8080"
@@ -773,7 +814,7 @@ networks:
   infra:
     external: true
     name: infra-network
-EOF_EVOLUTION
+EOF_EVOLUTION_API
 fi
 
 #############################################
@@ -814,11 +855,7 @@ cat >> "$BASE/scripts/start-all.sh" <<'EOF_START_END'
 for service in "${SERVICES[@]}"
 do
   echo "Subindo $service"
-  if [ "$service" = "evolution-db" ]; then
-    cd -- "$BASE/evolution-api"
-  else
-    cd -- "$BASE/$service"
-  fi
+  cd -- "$BASE/$service"
   docker compose up -d
 done
 
@@ -863,11 +900,7 @@ cat >> "$BASE/scripts/stop-all.sh" <<'EOF_STOP_END'
 for service in "${SERVICES[@]}"
 do
   echo "Parando $service"
-  if [ "$service" = "evolution-db" ]; then
-    cd -- "$BASE/evolution-api"
-  else
-    cd -- "$BASE/$service"
-  fi
+  cd -- "$BASE/$service"
   docker compose down
 done
 EOF_STOP_END

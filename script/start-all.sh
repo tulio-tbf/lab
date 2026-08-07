@@ -34,11 +34,7 @@ SERVICES=(
 for service in "${SERVICES[@]}"
 do
   echo "Subindo $service"
-  if [ "$service" = "evolution-db" ]; then
-    cd -- "$BASE/evolution-api"
-  else
-    cd -- "$BASE/$service"
-  fi
+  cd -- "$BASE/$service"
   docker compose up -d
 done
 
