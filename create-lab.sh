@@ -1,10 +1,78 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-set -e
+set -Eeuo pipefail
 
-BASE=/mnt/d/docker
-DATA=/mnt/d/docker/data
-NETWORK=infra-network
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BASE="${LAB_BASE:-$SCRIPT_DIR/docker}"
+DATA="${LAB_DATA:-}"
+NETWORK="infra-network"
+
+usage() {
+  cat <<'EOF'
+Uso: ./create-lab.sh [opções]
+
+  -b, --base DIRETÓRIO   Diretório dos arquivos Compose (padrão: ./docker)
+  -d, --data DIRETÓRIO   Diretório dos dados persistentes (padrão: BASE/data)
+  -h, --help             Exibe esta ajuda
+
+As opções também podem ser definidas por LAB_BASE e LAB_DATA.
+Os argumentos de linha de comando têm precedência sobre as variáveis.
+EOF
+}
+
+while (($#)); do
+  case "$1" in
+    -b|--base)
+      [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
+      BASE="$2"
+      shift 2
+      ;;
+    -d|--data)
+      [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
+      DATA="$2"
+      shift 2
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      echo "Erro: opção desconhecida: $1" >&2
+      usage >&2
+      exit 2
+      ;;
+  esac
+done
+
+to_platform_path() {
+  local path="$1"
+
+  if command -v wslpath >/dev/null 2>&1 && [[ "$path" =~ ^[A-Za-z]:[\\/].* ]]; then
+    wslpath -u "$path"
+  elif command -v cygpath >/dev/null 2>&1 && [[ "$path" =~ ^[A-Za-z]:[\\/].* ]]; then
+    cygpath -u "$path"
+  else
+    printf '%s\n' "$path"
+  fi
+}
+
+absolute_path() {
+  local path
+  path="$(to_platform_path "$1")"
+  mkdir -p "$path"
+  (cd -- "$path" && pwd -P)
+}
+
+BASE="$(absolute_path "$BASE")"
+if [[ -z "$DATA" ]]; then
+  DATA="$BASE/data"
+fi
+DATA="$(absolute_path "$DATA")"
+
+yaml_path() {
+  # Aspas simples tornam seguros espaços, dois-pontos e caracteres especiais.
+  printf "'%s'" "${1//\'/\'\'}"
+}
 
 printf "\nEscolha o que deseja criar:\n"
 printf "  A = criar todos os serviços\n"
@@ -91,15 +159,15 @@ if should_create_service "traefik"; then
 fi
 
 if should_create_service "wordpress" || should_create_service "wordpress-db"; then
-  mkdir -p "$BASE/wordpress" "$BASE/wordpress/files"
+  mkdir -p "$BASE/wordpress" "$BASE/wordpress/files" "$BASE/wordpress-db"
 fi
 
 if should_create_service "mautic" || should_create_service "mautic-db"; then
-  mkdir -p "$BASE/mautic" "$BASE/mautic/files"
+  mkdir -p "$BASE/mautic" "$BASE/mautic/files" "$BASE/mautic-db"
 fi
 
 if should_create_service "n8n" || should_create_service "n8n-db"; then
-  mkdir -p "$BASE/n8n" "$BASE/n8n/data"
+  mkdir -p "$BASE/n8n" "$BASE/n8n/data" "$BASE/n8n-db"
 fi
 
 if should_create_service "redis"; then
@@ -231,7 +299,7 @@ services:
       MYSQL_PASSWORD: wordpress123
 
     volumes:
-      - /mnt/d/docker/data/wordpress-db:/var/lib/mysql
+      - $(yaml_path "$DATA/wordpress-db:/var/lib/mysql")
 
     networks:
       - infra
@@ -248,7 +316,7 @@ fi
 #############################################
 
 if should_create_service "wordpress"; then
-cat > "$BASE/wordpress/docker-compose.yml" <<'EOF_WORDPRESS'
+cat > "$BASE/wordpress/docker-compose.yml" <<EOF_WORDPRESS
 services:
   wordpress:
     image: wordpress:latest
@@ -264,11 +332,11 @@ services:
       WORDPRESS_DB_PASSWORD: wordpress123
 
     volumes:
-      - /mnt/d/docker/wordpress/files:/var/www/html/
+      - $(yaml_path "$BASE/wordpress/files:/var/www/html/")
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.wordpress.rule=Host(`wordpress.lab.local`)
+      - traefik.http.routers.wordpress.rule=Host(\`wordpress.lab.local\`)
       - traefik.http.services.wordpress.loadbalancer.server.port=80
 
     networks:
@@ -302,7 +370,7 @@ services:
       MYSQL_PASSWORD: mautic123
 
     volumes:
-      - /mnt/d/docker/data/mautic-db:/var/lib/mysql
+      - $(yaml_path "$DATA/mautic-db:/var/lib/mysql")
 
     networks:
       - infra
@@ -319,7 +387,7 @@ fi
 #############################################
 
 if should_create_service "mautic"; then
-cat > "$BASE/mautic/docker-compose.yml" <<'EOF_MAUTIC'
+cat > "$BASE/mautic/docker-compose.yml" <<EOF_MAUTIC
 services:
   mautic:
     image: mautic/mautic:latest
@@ -335,11 +403,11 @@ services:
       MAUTIC_DB_NAME: mautic
 
     volumes:
-      - /mnt/d/docker/mautic/files:/var/www/html/
+      - $(yaml_path "$BASE/mautic/files:/var/www/html/")
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.mautic.rule=Host(`mautic.lab.local`)
+      - traefik.http.routers.mautic.rule=Host(\`mautic.lab.local\`)
       - traefik.http.services.mautic.loadbalancer.server.port=80
 
     networks:
@@ -372,7 +440,7 @@ services:
       POSTGRES_PASSWORD: n8n123
 
     volumes:
-      - /mnt/d/docker/data/n8n-db:/var/lib/postgresql/data
+      - $(yaml_path "$DATA/n8n-db:/var/lib/postgresql/data")
 
     networks:
       - infra
@@ -389,7 +457,7 @@ fi
 #############################################
 
 if should_create_service "n8n"; then
-cat > "$BASE/n8n/docker-compose.yml" <<'EOF_N8N'
+cat > "$BASE/n8n/docker-compose.yml" <<EOF_N8N
 services:
   n8n:
     image: n8nio/n8n:latest
@@ -405,11 +473,11 @@ services:
       WEBHOOK_URL: http://n8n.lab.local/
 
     volumes:
-      - /mnt/d/docker/n8n/data:/home/node/
+      - $(yaml_path "$BASE/n8n/data:/home/node/")
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.n8n.rule=Host(`n8n.lab.local`)
+      - traefik.http.routers.n8n.rule=Host(\`n8n.lab.local\`)
       - traefik.http.services.n8n.loadbalancer.server.port=5678
 
     networks:
@@ -437,7 +505,7 @@ services:
     restart: unless-stopped
 
     volumes:
-      - /mnt/d/docker/data/redis:/data
+      - $(yaml_path "$DATA/redis:/data")
 
     networks:
       - infra
@@ -468,7 +536,7 @@ services:
       MINIO_ROOT_PASSWORD: admin123
 
     volumes:
-      - /mnt/d/docker/data/minio:/data
+      - $(yaml_path "$DATA/minio:/data")
 
     labels:
       - traefik.enable=true
@@ -504,7 +572,7 @@ services:
 
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-      - /mnt/d/docker/data/portainer:/data
+      - $(yaml_path "$DATA/portainer:/data")
 
     labels:
       - traefik.enable=true
@@ -601,11 +669,11 @@ services:
     restart: unless-stopped
 
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@lab.localdomain
+      PGADMIN_DEFAULT_EMAIL: admin@lab.local
       PGADMIN_DEFAULT_PASSWORD: admin123
 
     volumes:
-      - /mnt/d/docker/data/pgadmin:/var/lib/pgadmin
+      - $(yaml_path "$DATA/pgadmin:/var/lib/pgadmin")
 
     labels:
       - traefik.enable=true
@@ -630,7 +698,7 @@ fi
 #############################################
 
 if should_create_service "evolution-api" || should_create_service "evolution-db"; then
-cat > "$BASE/evolution-api/docker-compose.yml" <<'EOF_EVOLUTION'
+cat > "$BASE/evolution-api/docker-compose.yml" <<EOF_EVOLUTION
 services:
   evolution-db:
     image: postgres:16-alpine
@@ -643,7 +711,7 @@ services:
       POSTGRES_PASSWORD: postgres123
 
     volumes:
-      - evolution-db-data:/var/lib/postgresql/data
+      - $(yaml_path "$DATA/evolution-db:/var/lib/postgresql/data")
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U postgres -d evolution"]
@@ -689,20 +757,17 @@ services:
       S3_ENABLED: "false"
 
     volumes:
-      - /mnt/d/docker/data/evolution-api:/evolution/instances
+      - $(yaml_path "$DATA/evolution-api:/evolution/instances")
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.evolution-api.rule=Host(`evolution-api.lab.local`)
+      - traefik.http.routers.evolution-api.rule=Host(\`evolution-api.lab.local\`)
       - traefik.http.routers.evolution-api.entrypoints=web
       - traefik.http.routers.evolution-api.service=evolution-api
       - traefik.http.services.evolution-api.loadbalancer.server.port=8080
 
     networks:
       - infra
-
-volumes:
-  evolution-db-data:
 
 networks:
   infra:
@@ -723,11 +788,20 @@ for service in traefik wordpress-db mautic-db n8n-db redis minio wordpress mauti
 done
 
 cat > "$BASE/scripts/start-all.sh" <<'EOF_START'
-#!/bin/bash
+#!/usr/bin/env bash
 
-set -e
+set -Eeuo pipefail
 
-BASE=/mnt/d/docker
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BASE="${LAB_BASE:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+
+if [[ "${1:-}" == "-b" || "${1:-}" == "--base" ]]; then
+  [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
+  BASE="$2"
+elif [[ $# -gt 0 ]]; then
+  echo "Uso: $0 [--base DIRETÓRIO]" >&2
+  exit 2
+fi
 
 SERVICES=(
 EOF_START
@@ -741,9 +815,9 @@ for service in "${SERVICES[@]}"
 do
   echo "Subindo $service"
   if [ "$service" = "evolution-db" ]; then
-    cd "$BASE/evolution-api"
+    cd -- "$BASE/evolution-api"
   else
-    cd "$BASE/$service"
+    cd -- "$BASE/$service"
   fi
   docker compose up -d
 done
@@ -763,11 +837,20 @@ for service in "${START_SERVICES[@]}"; do
 done
 
 cat > "$BASE/scripts/stop-all.sh" <<'EOF_STOP'
-#!/bin/bash
+#!/usr/bin/env bash
 
-set -e
+set -Eeuo pipefail
 
-BASE=/mnt/d/docker
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BASE="${LAB_BASE:-$(cd -- "$SCRIPT_DIR/.." && pwd -P)}"
+
+if [[ "${1:-}" == "-b" || "${1:-}" == "--base" ]]; then
+  [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
+  BASE="$2"
+elif [[ $# -gt 0 ]]; then
+  echo "Uso: $0 [--base DIRETÓRIO]" >&2
+  exit 2
+fi
 
 SERVICES=(
 EOF_STOP
@@ -781,9 +864,9 @@ for service in "${SERVICES[@]}"
 do
   echo "Parando $service"
   if [ "$service" = "evolution-db" ]; then
-    cd "$BASE/evolution-api"
+    cd -- "$BASE/evolution-api"
   else
-    cd "$BASE/$service"
+    cd -- "$BASE/$service"
   fi
   docker compose down
 done
@@ -836,6 +919,6 @@ if should_create_service "evolution-api"; then
 fi
 
 printf "\nInfraestrutura criada com sucesso.\n"
-printf "\nAdicione os hosts ao arquivo hosts do Windows.\n"
+printf "\nAdicione as entradas de %s/hosts-lab.txt ao arquivo hosts do sistema.\n" "$BASE"
 printf "\nExecute:\n"
 printf "%s/scripts/start-all.sh\n" "$BASE"

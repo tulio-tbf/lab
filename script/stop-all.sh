@@ -1,8 +1,17 @@
-#!/bin/bash
+#!/usr/bin/env bash
 
-set -e
+set -Eeuo pipefail
 
-BASE=/mnt/d/docker
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BASE="${LAB_BASE:-$SCRIPT_DIR/../docker}"
+
+if [[ "${1:-}" == "-b" || "${1:-}" == "--base" ]]; then
+  [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
+  BASE="$2"
+elif [[ $# -gt 0 ]]; then
+  echo "Uso: $0 [--base DIRETÓRIO]" >&2
+  exit 2
+fi
 
 SERVICES=(
   traefik
@@ -26,9 +35,9 @@ for service in "${SERVICES[@]}"
 do
   echo "Parando $service"
   if [ "$service" = "evolution-db" ]; then
-    cd "$BASE/evolution-api"
+    cd -- "$BASE/evolution-api"
   else
-    cd "$BASE/$service"
+    cd -- "$BASE/$service"
   fi
   docker compose down
 done

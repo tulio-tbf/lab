@@ -1,17 +1,24 @@
-# lab
-Este repositório contém uma infraestrutura local baseada em Docker Compose para hospedar vários serviços de apoio e aplicações web em um ambiente de laboratório.
+# Docker Lab
 
-# Ambiente Docker Lab
+Infraestrutura local baseada em Docker Compose para hospedar serviços de apoio
+e aplicações web em Windows (WSL 2 ou Git Bash) e Linux.
 
-Este repositório contém uma infraestrutura local baseada em Docker Compose para hospedar vários serviços de apoio e aplicações web em um ambiente de laboratório.
+Cada serviço possui seu próprio arquivo Compose. Todos compartilham a rede
+externa `infra-network` e os serviços web são publicados pelo Traefik.
 
-## Visão geral
+## Requisitos
 
-A estrutura foi organizada em pastas separadas por serviço, cada uma com seu próprio arquivo de compose. Todos os containers compartilham a mesma rede Docker externa chamada `infra-network` e utilizam o Traefik como proxy reverso para expor os serviços por hosts locais.
+- Docker Engine + Docker Compose v2 no Linux; ou
+- Docker Desktop com integração WSL 2 no Windows;
+- Bash 4 ou superior.
 
-## Serviços incluídos
+No Windows, execute os comandos abaixo em uma distribuição WSL ou no Git Bash.
+O script aceita tanto caminhos WSL (`/mnt/d/docker`) quanto caminhos Windows
+(`D:\docker`) quando a ferramenta de conversão do ambiente está disponível.
 
-- Traefik: proxy reverso e dashboard
+## Serviços
+
+- Traefik
 - WordPress + MySQL
 - Mautic + MariaDB
 - n8n + PostgreSQL
@@ -23,133 +30,91 @@ A estrutura foi organizada em pastas separadas por serviço, cada uma com seu pr
 - Mailhog
 - Evolution API + PostgreSQL
 
-## Estrutura do projeto
+## Criar o ambiente
 
-```text
-/mnt/d/docker
-├── create-lab.sh
-├── hosts-lab.txt
-├── scripts/
-│   ├── start-all.sh
-│   └── stop-all.sh
-├── traefik/
-├── wordpress/
-├── wordpress-db/
-├── mautic/
-├── mautic-db/
-├── n8n/
-├── n8n-db/
-├── redis/
-├── minio/
-├── portainer/
-├── adminer/
-├── pgadmin/
-├── mailhog/
-└── evolution-api/
-```
-
-## Como criar o ambiente
-
-Execute o script principal:
+Por padrão, os arquivos são criados em `./docker`, ao lado deste README, e os
+dados persistentes em `./docker/data`:
 
 ```bash
-cd /mnt/d/docker
 ./create-lab.sh
 ```
 
-Durante a execução, o script irá perguntar quais serviços deseja criar. Você pode:
-
-- digitar `A` para criar todos os serviços
-- ou informar os serviços desejados separados por espaço
-
-Exemplos:
+Para escolher os diretórios:
 
 ```bash
-A
+./create-lab.sh --base /opt/docker-lab --data /srv/docker-lab-data
 ```
 
-ou
+Exemplo no Windows/WSL:
 
 ```bash
+./create-lab.sh --base /mnt/d/docker --data /mnt/d/docker/data
+```
+
+Também é possível usar caminhos no formato Windows dentro do WSL ou Git Bash:
+
+```bash
+./create-lab.sh --base 'D:\docker' --data 'D:\docker\data'
+```
+
+As mesmas opções podem ser definidas por variáveis de ambiente. Argumentos de
+linha de comando têm precedência:
+
+```bash
+LAB_BASE=/opt/docker-lab LAB_DATA=/srv/docker-lab-data ./create-lab.sh
+```
+
+Use `./create-lab.sh --help` para consultar as opções. Durante a execução,
+informe `A` para todos os serviços ou uma lista separada por espaços, como:
+
+```text
 traefik wordpress evolution-api
 ```
 
-O script também inclui automaticamente as dependências necessárias.
+As dependências necessárias são incluídas automaticamente.
 
-## Como iniciar tudo
+## Iniciar e parar
+
+Os scripts gerados descobrem o diretório base pela sua própria localização:
 
 ```bash
-cd /mnt/d/docker/scripts
-./start-all.sh
+/opt/docker-lab/scripts/start-all.sh
+/opt/docker-lab/scripts/stop-all.sh
 ```
 
-## Como parar tudo
+O diretório também pode ser sobrescrito:
 
 ```bash
-cd /mnt/d/docker/scripts
-./stop-all.sh
+LAB_BASE=/opt/docker-lab ./script/start-all.sh
+./script/stop-all.sh --base /opt/docker-lab
 ```
 
 ## Hosts locais
 
-Os serviços expostos pelo Traefik podem ser acessados pelos hosts abaixo, dependendo do que foi criado:
+O instalador gera `hosts-lab.txt` no diretório base somente com os serviços
+selecionados. Adicione seu conteúdo ao arquivo de hosts:
 
-```text
-127.0.0.1 traefik.lab.local
-127.0.0.1 wordpress.lab.local
-127.0.0.1 mautic.lab.local
-127.0.0.1 n8n.lab.local
-127.0.0.1 minio.lab.local
-127.0.0.1 portainer.lab.local
-127.0.0.1 adminer.lab.local
-127.0.0.1 pgadmin.lab.local
-127.0.0.1 mailhog.lab.local
-127.0.0.1 evolution-api.lab.local
-```
+- Linux e WSL: `/etc/hosts`
+- Windows: `C:\Windows\System32\drivers\etc\hosts`
 
-Para que esses hosts funcionem corretamente, adicione as entradas acima ao arquivo de hosts do sistema.
+Endereços disponíveis incluem:
 
-## Acesso aos serviços
+- http://traefik.lab.local
+- http://wordpress.lab.local
+- http://mautic.lab.local
+- http://n8n.lab.local
+- http://minio.lab.local
+- http://portainer.lab.local
+- http://adminer.lab.local
+- http://pgadmin.lab.local
+- http://mailhog.lab.local
+- http://evolution-api.lab.local
 
-- Dashboard do Traefik: http://traefik.lab.local
-- WordPress: http://wordpress.lab.local
-- Mautic: http://mautic.lab.local
-- n8n: http://n8n.lab.local
-- MinIO Console: http://minio.lab.local
-- Portainer: http://portainer.lab.local
-- Adminer: http://adminer.lab.local
-- pgAdmin: http://pgadmin.lab.local
-- Mailhog: http://mailhog.lab.local
-- Evolution API: http://evolution-api.lab.local
+## Persistência e segurança
 
-## Observações
+Todos os bind mounts passam a usar os diretórios escolhidos em `BASE` e
+`DATA`; não há dependência fixa de `/mnt/d/docker`.
 
-- Alguns serviços utilizam dependências de banco de dados e cache, como PostgreSQL, MySQL/MariaDB e Redis.
-- O Evolution API foi configurado com PostgreSQL e Redis para funcionamento básico.
-- Os dados persistentes ficam em diretórios dentro de `data/`.
-
-## Comandos úteis
-
-```bash
-# Ver containers em execução
-docker ps
-
-# Ver logs de um container
-docker logs <nome-do-container>
-
-# Parar um serviço específico
-docker compose down
-```
-
-## Notas de segurança
-
-As credenciais e senhas utilizadas neste ambiente são apenas para laboratório. Para uso real, substitua-os por valores seguros.
-
-## Evolution API + N8N
-# n8n-nodes-evolution-api
-## Excluir image dos Containers
-# docker image prune -a
-## Para remover também containers parados e volumes órfãos, rode primeiro:
-# docker container prune
-# docker volume prune
-# docker image prune -a
+As credenciais presentes nos arquivos são adequadas somente para laboratório.
+Troque senhas, chaves e demais segredos antes de expor qualquer serviço fora
+de uma máquina de desenvolvimento.
