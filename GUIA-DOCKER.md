@@ -407,6 +407,10 @@ docker logs -f --tail=200 evolution-api
 docker inspect evolution-api
 ```
 
+O laboratório utiliza `evoapicloud/evolution-api:v2.3.7` e força a resolução
+DNS IPv4 com `NODE_OPTIONS=--dns-result-order=ipv4first`, evitando loops de
+conexão do Baileys observados em versões antigas no Docker/WSL.
+
 Aplicação: <http://evolution-api.lab.local>
 
 Depois de qualquer alteração no Compose:

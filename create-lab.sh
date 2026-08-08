@@ -769,7 +769,7 @@ if should_create_service "evolution-api"; then
 cat > "$BASE/evolution-api/docker-compose.yml" <<EOF_EVOLUTION_API
 services:
   evolution-api:
-    image: evoapicloud/evolution-api:v2.1.1
+    image: evoapicloud/evolution-api:v2.3.7
     container_name: evolution-api
     restart: unless-stopped
 
@@ -779,6 +779,8 @@ services:
     environment:
       AUTHENTICATION_API_KEY: change-me
       SERVER_URL: http://evolution-api.lab.local
+      SERVER_DISABLE_MANAGER: "false"
+      NODE_OPTIONS: --dns-result-order=ipv4first
       DATABASE_ENABLED: "true"
       DATABASE_PROVIDER: postgresql
       DATABASE_CONNECTION_URI: postgresql://postgres:postgres123@evolution-db:5432/evolution
