@@ -11,6 +11,11 @@ cd /mnt/d/lab/docker
 > desenvolvimento local. Consulte os arquivos `docker-compose.yml` antes de
 > executar comandos de banco de dados caso elas tenham sido alteradas.
 
+> Este laboratório usa o Docker Engine selecionado pelo comando `docker`.
+> No WSL com Engine nativo, confirme que o `systemd` está habilitado em
+> `/etc/wsl.conf` e que `sudo systemctl start docker` funciona. O Docker
+> Desktop não compartilha automaticamente as imagens desse Engine.
+
 ## Gerenciar todo o laboratório
 
 Iniciar todos os serviços:
@@ -112,6 +117,18 @@ Baixar a imagem configurada e recriar o container:
 docker compose pull
 docker compose up -d --force-recreate
 ```
+
+Para atualizar o n8n, use o script abaixo. Ele só recria o container se o
+download da imagem terminar com sucesso:
+
+```bash
+cd /mnt/d/lab/docker/n8n
+./update.sh
+```
+
+Não execute apenas `docker compose up -d --force-recreate` depois de um
+`docker compose pull` com erro, pois o Compose pode iniciar a imagem antiga
+que já está armazenada localmente.
 
 > Antes de atualizar imagens de banco de dados, faça backup e confira as notas
 > de migração da versão. Não use `docker compose down -v` neste laboratório sem

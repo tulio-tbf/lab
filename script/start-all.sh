@@ -13,6 +13,15 @@ elif [[ $# -gt 0 ]]; then
   exit 2
 fi
 
+if ! docker info >/dev/null 2>&1; then
+  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
+  echo "Inicie o systemd e o serviço Docker antes de continuar:" >&2
+  echo "  systemctl is-system-running" >&2
+  echo "  sudo systemctl start docker" >&2
+  echo "Se o WSL não usar systemd, habilite [boot] systemd=true em /etc/wsl.conf e execute 'wsl --shutdown' no PowerShell." >&2
+  exit 1
+fi
+
 SERVICES=(
   traefik
   wordpress-db

@@ -515,6 +515,33 @@ networks:
     external: true
     name: infra-network
 EOF_N8N
+
+  cat > "$BASE/n8n/update.sh" <<'EOF_N8N_UPDATE'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+cd -- "$SCRIPT_DIR"
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
+  echo "Verifique o systemd e execute: sudo systemctl start docker" >&2
+  exit 1
+fi
+
+echo "Baixando a imagem atual do n8n..."
+if ! docker compose pull; then
+  echo "Erro: a imagem não foi baixada; o container não será recriado." >&2
+  echo "Verifique a conectividade IPv4/DNS do Docker Engine e tente novamente." >&2
+  exit 1
+fi
+
+echo "Recriando o container n8n..."
+docker compose up -d --force-recreate
+docker exec n8n n8n --version
+EOF_N8N_UPDATE
+  chmod +x "$BASE/n8n/update.sh"
 fi
 
 #############################################
@@ -844,6 +871,15 @@ if [[ "${1:-}" == "-b" || "${1:-}" == "--base" ]]; then
 elif [[ $# -gt 0 ]]; then
   echo "Uso: $0 [--base DIRETÓRIO]" >&2
   exit 2
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
+  echo "Inicie o systemd e o serviço Docker antes de continuar:" >&2
+  echo "  systemctl is-system-running" >&2
+  echo "  sudo systemctl start docker" >&2
+  echo "Se o WSL não usar systemd, habilite [boot] systemd=true em /etc/wsl.conf e execute 'wsl --shutdown' no PowerShell." >&2
+  exit 1
 fi
 
 SERVICES=(

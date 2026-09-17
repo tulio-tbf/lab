@@ -16,6 +16,20 @@ No Windows, execute os comandos abaixo em uma distribuição WSL ou no Git Bash.
 O script aceita tanto caminhos WSL (`/mnt/d/docker`) quanto caminhos Windows
 (`D:\docker`) quando a ferramenta de conversão do ambiente está disponível.
 
+Ao usar Docker Engine nativo no WSL, habilite o `systemd` em `/etc/wsl.conf`:
+
+```ini
+[boot]
+systemd=true
+
+[network]
+generateResolvConf=false
+```
+
+Depois de alterar esse arquivo, execute `wsl --shutdown` no PowerShell e
+confirme no WSL com `sudo systemctl start docker`. O Docker Desktop usa outro
+daemon e não compartilha automaticamente as imagens do Engine nativo.
+
 ## Serviços
 
 - Traefik
