@@ -27,6 +27,18 @@ if ! docker network inspect infra-network >/dev/null 2>&1; then
   docker network create infra-network >/dev/null
 fi
 
+if [[ -z "${SSH_AUTH_SOCK:-}" && -S "$HOME/.ssh/docker-lab-agent.sock" ]]; then
+  SSH_AUTH_SOCK="$HOME/.ssh/docker-lab-agent.sock"
+  export SSH_AUTH_SOCK
+fi
+
+if [[ -S "${SSH_AUTH_SOCK:-}" ]]; then
+  echo "Agente SSH disponível para os containers de aplicação."
+else
+  echo "Aviso: agente SSH não encontrado; Git por SSH ficará indisponível nos containers." >&2
+  echo "Carregue a chave com ssh-add e inicie os containers novamente." >&2
+fi
+
 SERVICES=(
   traefik
   wordpress-db
@@ -55,7 +67,7 @@ do
   fi
 
   echo "Subindo $service"
-  if ! (cd -- "$BASE/$service" && docker compose up -d); then
+  if ! (cd -- "$BASE/$service" && docker compose up -d --build); then
     FAILED_SERVICES+=("$service")
   fi
 done

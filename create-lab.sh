@@ -321,16 +321,30 @@ fi
 #############################################
 
 if should_create_service "wordpress"; then
+cat > "$BASE/wordpress/Dockerfile" <<'EOF_WORDPRESS_DOCKERFILE'
+FROM wordpress:latest
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
+    && rm -rf /var/lib/apt/lists/* \
+    && curl -fsSL https://raw.githubusercontent.com/wp-cli/builds/gh-pages/phar/wp-cli.phar -o /usr/local/bin/wp \
+    && chmod +x /usr/local/bin/wp
+EOF_WORDPRESS_DOCKERFILE
+
 cat > "$BASE/wordpress/docker-compose.yml" <<EOF_WORDPRESS
 services:
   wordpress:
-    image: wordpress:latest
+    image: wordpress-lab:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
 
     container_name: wordpress
 
     restart: unless-stopped
 
     environment:
+      SSH_AUTH_SOCK: /run/host-ssh-agent
       WORDPRESS_DB_HOST: wordpress-db
       WORDPRESS_DB_NAME: wordpress
       WORDPRESS_DB_USER: wordpress
@@ -338,6 +352,7 @@ services:
       WORDPRESS_ENVIRONMENT_TYPE: local
 
     volumes:
+      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
       - $(yaml_path "$DATA/wordpress/files:/var/www/html/")
       - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
 
@@ -400,16 +415,29 @@ fi
 #############################################
 
 if should_create_service "mautic"; then
+cat > "$BASE/mautic/Dockerfile" <<'EOF_MAUTIC_DOCKERFILE'
+FROM mautic/mautic:7.1.2-apache
+
+USER root
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssh-client \
+    && rm -rf /var/lib/apt/lists/*
+EOF_MAUTIC_DOCKERFILE
+
 cat > "$BASE/mautic/docker-compose.yml" <<EOF_MAUTIC
 services:
   mautic:
-    image: mautic/mautic:7.1.2-apache
+    image: mautic-lab:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
 
     container_name: mautic
 
     restart: unless-stopped
 
     environment:
+      SSH_AUTH_SOCK: /run/host-ssh-agent
       MAUTIC_DB_HOST: mautic-db
       MAUTIC_DB_PORT: "3306"
       MAUTIC_DB_USER: mautic
@@ -417,6 +445,7 @@ services:
       MAUTIC_DB_DATABASE: mautic
 
     volumes:
+      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
       - mautic-config-data:/var/www/html/config
       - mautic-media-files-data:/var/www/html/docroot/media/files
       - mautic-media-images-data:/var/www/html/docroot/media/images
@@ -498,6 +527,7 @@ services:
     restart: unless-stopped
 
     environment:
+      SSH_AUTH_SOCK: /run/host-ssh-agent
       N8N_HOST: n8n.lab.local
       N8N_PROTOCOL: http
       N8N_SECURE_COOKIE: "false"
@@ -505,6 +535,7 @@ services:
       N8N_RESTRICT_FILE_ACCESS_TO: /data/arquivos
 
     volumes:
+      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
       - $(yaml_path "$DATA/n8n/data:/home/node/")
       - $(yaml_path "$DATA/n8n/arquivos:/data/arquivos")
 
@@ -534,6 +565,15 @@ if ! docker info >/dev/null 2>&1; then
   echo "Erro: o Docker Engine não está acessível neste WSL." >&2
   echo "Verifique o systemd e execute: sudo systemctl start docker" >&2
   exit 1
+fi
+
+if [[ -z "${SSH_AUTH_SOCK:-}" && -S "$HOME/.ssh/docker-lab-agent.sock" ]]; then
+  SSH_AUTH_SOCK="$HOME/.ssh/docker-lab-agent.sock"
+  export SSH_AUTH_SOCK
+fi
+
+if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then
+  echo "Aviso: agente SSH não encontrado; Git por SSH ficará indisponível no n8n." >&2
 fi
 
 echo "Baixando a imagem atual do n8n..."
@@ -800,10 +840,21 @@ fi
 #############################################
 
 if should_create_service "evolution-api"; then
+cat > "$BASE/evolution-api/Dockerfile" <<'EOF_EVOLUTION_DOCKERFILE'
+FROM evoapicloud/evolution-api:v2.3.7
+
+USER root
+RUN apk add --no-cache git openssh-client
+EOF_EVOLUTION_DOCKERFILE
+
 cat > "$BASE/evolution-api/docker-compose.yml" <<EOF_EVOLUTION_API
 services:
   evolution-api:
-    image: evoapicloud/evolution-api:v2.3.7
+    image: evolution-api-lab:latest
+    build:
+      context: .
+      dockerfile: Dockerfile
+
     container_name: evolution-api
     restart: unless-stopped
 
@@ -811,6 +862,7 @@ services:
       - "8080:8080"
 
     environment:
+      SSH_AUTH_SOCK: /run/host-ssh-agent
       AUTHENTICATION_API_KEY: change-me
       SERVER_URL: http://evolution-api.lab.local
       SERVER_DISABLE_MANAGER: "false"
@@ -834,6 +886,7 @@ services:
       S3_ENABLED: "false"
 
     volumes:
+      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
       - $(yaml_path "$DATA/evolution-api:/evolution/instances")
 
     labels:
@@ -894,6 +947,18 @@ if ! docker network inspect infra-network >/dev/null 2>&1; then
   docker network create infra-network >/dev/null
 fi
 
+if [[ -z "${SSH_AUTH_SOCK:-}" && -S "$HOME/.ssh/docker-lab-agent.sock" ]]; then
+  SSH_AUTH_SOCK="$HOME/.ssh/docker-lab-agent.sock"
+  export SSH_AUTH_SOCK
+fi
+
+if [[ -S "${SSH_AUTH_SOCK:-}" ]]; then
+  echo "Agente SSH disponível para os containers de aplicação."
+else
+  echo "Aviso: agente SSH não encontrado; Git por SSH ficará indisponível nos containers." >&2
+  echo "Carregue a chave com ssh-add e inicie os containers novamente." >&2
+fi
+
 SERVICES=(
 EOF_START
 for service in "${START_SERVICES[@]}"; do
@@ -914,7 +979,7 @@ do
   fi
 
   echo "Subindo $service"
-  if ! (cd -- "$BASE/$service" && docker compose up -d); then
+  if ! (cd -- "$BASE/$service" && docker compose up -d --build); then
     FAILED_SERVICES+=("$service")
   fi
 done

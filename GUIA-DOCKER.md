@@ -150,7 +150,7 @@ cd ~/docker-shared/<servico>
 Criar ou iniciar:
 
 ```bash
-docker compose up -d
+docker compose up -d --build
 ```
 
 Ver o estado:
@@ -195,10 +195,22 @@ Validar o arquivo Compose:
 docker compose config
 ```
 
-Baixar a imagem configurada e recriar o container:
+Para serviços que usam diretamente uma imagem publicada, baixe a imagem e
+recrie o container:
 
 ```bash
 docker compose pull
+docker compose up -d --force-recreate
+```
+
+WordPress, Mautic e Evolution API usam imagens locais construídas sobre as
+imagens oficiais para incluir o cliente SSH; Git também está disponível nos
+quatro containers, e o WordPress inclui WP-CLI. Ao iniciar esses serviços,
+`--build` recompõe as imagens quando necessário. Para atualizar manualmente
+uma imagem-base personalizada e recriar o container:
+
+```bash
+docker compose build --pull
 docker compose up -d --force-recreate
 ```
 
@@ -307,6 +319,53 @@ docker exec wordpress php -v
 docker exec wordpress php -m
 ```
 
+O container inclui Git e WP-CLI. Execute os comandos como `www-data` para
+evitar criar arquivos pertencentes ao root no diretório do site:
+
+```bash
+docker exec wordpress git --version
+docker exec --user www-data wordpress wp --info
+docker exec --user www-data wordpress wp core version
+```
+
+`wp core version` requer que a instalação do WordPress já esteja disponível.
+O `wp` também pode executar comandos administrativos, por exemplo:
+
+```bash
+docker exec --user www-data wordpress wp plugin list
+docker exec --user www-data wordpress wp cache flush
+```
+
+### Git por SSH nos containers de aplicação
+
+WordPress, Mautic, n8n e Evolution API encaminham o socket do `ssh-agent` do
+host para `/run/host-ssh-agent`. A chave privada permanece no host; a chave
+pública `.pub` não autentica operações Git por si só. Adicione a identidade ao
+agente no mesmo terminal em que iniciará os containers:
+
+```bash
+export SSH_AUTH_SOCK="${SSH_AUTH_SOCK:-$HOME/.ssh/docker-lab-agent.sock}"
+if [[ ! -S "$SSH_AUTH_SOCK" ]]; then
+  ssh-agent -a "$SSH_AUTH_SOCK" >/dev/null
+fi
+ssh-add ~/.ssh/id_ed25519
+ssh-add -l
+```
+
+Recrie os containers existentes para habilitar o encaminhamento:
+
+```bash
+for service in wordpress mautic n8n evolution-api; do
+  (cd "$HOME/docker-shared/$service" && docker compose up -d --build --force-recreate)
+done
+```
+
+O script `start-all.sh` também usa `--build` e avisa quando não encontra um
+agente SSH. Sem agente ativo, os containers continuam iniciando, mas Git via
+SSH não funciona. O socket concede aos processos que podem acessá-lo o uso das
+identidades carregadas enquanto o container estiver em execução; encaminhe-o
+somente para containers de aplicação confiáveis.
+
 Os arquivos persistentes também estão disponíveis no host:
 
 ```bash
@@ -377,6 +436,7 @@ docker exec mautic php /var/www/html/bin/console cache:clear
 docker exec mautic php /var/www/html/bin/console mautic:segments:update
 docker exec mautic php /var/www/html/bin/console mautic:campaigns:update
 docker exec mautic php /var/www/html/bin/console mautic:campaigns:trigger
+docker exec mautic git --version
 ```
 
 O código da aplicação vem da imagem e não deve receber um bind mount sobre
@@ -409,6 +469,7 @@ docker exec -i mautic-db mariadb -umautic -pmautic123 mautic < mautic-backup.sql
 ```bash
 docker exec -it n8n sh
 docker exec n8n n8n --version
+docker exec n8n git --version
 docker logs -f --tail=200 n8n
 ```
 
@@ -594,6 +655,9 @@ Para envio feito pelas próprias aplicações, configure o cliente correspondent
 
 ```bash
 docker exec -it evolution-api sh
+docker exec evolution-api git --version
+docker exec evolution-api node --version
+docker exec evolution-api npm --version
 docker logs -f --tail=200 evolution-api
 docker inspect evolution-api
 ```
