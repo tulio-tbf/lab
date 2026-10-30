@@ -46,8 +46,8 @@ daemon e não compartilha automaticamente as imagens do Engine nativo.
 
 ## Criar o ambiente
 
-Por padrão, os arquivos são criados em `./docker`, ao lado deste README, e os
-dados persistentes em `./docker/data`:
+Por padrão, as configurações são criadas em `~/docker-shared`, os dados
+persistentes em `~/lab-data` e os diretórios de backup em `~/backups`:
 
 ```bash
 ./create-lab.sh
@@ -59,10 +59,16 @@ Para escolher os diretórios:
 ./create-lab.sh --base /opt/docker-lab --data /srv/docker-lab-data
 ```
 
+O diretório de backups também pode ser definido:
+
+```bash
+./create-lab.sh --base ~/docker-shared --data ~/lab-data --backups ~/backups
+```
+
 Exemplo no Windows/WSL:
 
 ```bash
-./create-lab.sh --base /mnt/d/docker --data /mnt/d/docker/data
+./create-lab.sh --base /mnt/d/docker-shared --data /mnt/d/lab-data --backups /mnt/d/backups
 ```
 
 Também é possível usar caminhos no formato Windows dentro do WSL ou Git Bash:
@@ -75,7 +81,7 @@ As mesmas opções podem ser definidas por variáveis de ambiente. Argumentos de
 linha de comando têm precedência:
 
 ```bash
-LAB_BASE=/opt/docker-lab LAB_DATA=/srv/docker-lab-data ./create-lab.sh
+LAB_BASE=/opt/docker-lab LAB_DATA=/srv/docker-lab-data LAB_BACKUPS=/srv/backups ./create-lab.sh
 ```
 
 Use `./create-lab.sh --help` para consultar as opções. Durante a execução,
@@ -105,22 +111,23 @@ LAB_BASE=/opt/docker-lab ./scripts/start-all.sh
 
 ## Hosts locais
 
-O instalador gera `hosts-lab.txt` no diretório base somente com os serviços
-selecionados. Adicione seu conteúdo ao arquivo de hosts:
-
-- Linux e WSL: `/etc/hosts` (necessário para acessar os domínios a partir do WSL)
-- Windows: `C:\Windows\System32\drivers\etc\hosts`
-
-No WSL, acrescente as entradas que ainda não existirem:
+O instalador gera `hosts-lab.txt` no diretório de configuração somente com os
+serviços selecionados. Para atualizar os hosts do WSL e do Windows, execute o
+script gerado:
 
 ```bash
-while IFS= read -r entry; do
-  grep -Fqx "$entry" /etc/hosts || printf '%s\n' "$entry" | sudo tee -a /etc/hosts >/dev/null
-done < ./hosts-lab.txt
+~/docker-shared/scripts/update-hosts.sh
 ```
 
-Para acessar os serviços pelo navegador do Windows, adicione também as entradas
-ao arquivo `hosts` do Windows.
+O script atualiza um bloco gerenciado e pode ser executado novamente quando a
+lista de serviços mudar. No WSL, ele pede `sudo`; para o arquivo do Windows,
+abre uma solicitação de elevação do UAC. Os demais conteúdos dos arquivos
+`hosts` são preservados. Para atualizar somente um deles:
+
+```bash
+~/docker-shared/scripts/update-hosts.sh --wsl-only
+~/docker-shared/scripts/update-hosts.sh --windows-only
+```
 
 Endereços disponíveis incluem:
 
@@ -137,10 +144,15 @@ Endereços disponíveis incluem:
 
 ## Persistência e segurança
 
-Os arquivos das aplicações e demais bind mounts usam os diretórios escolhidos
-em `BASE` e `DATA`. Os bancos MySQL, MariaDB e PostgreSQL e os dados do pgAdmin usam volumes Docker
-nomeados para garantir as permissões Unix exigidas pelos serviços, inclusive
-quando o laboratório está localizado em `/mnt` no WSL.
+As configurações geradas ficam em `BASE`, os arquivos das aplicações e demais
+bind mounts ficam em `DATA`, e `BACKUPS` recebe as pastas `databases`, `volumes`
+e `projects`. A criação dessas pastas não executa nem agenda backups.
+
+WordPress, n8n, Redis, MinIO, Portainer e Evolution API usam bind mounts sob
+`DATA`. Os bancos MySQL, MariaDB e PostgreSQL, o pgAdmin e os dados do Mautic
+continuam usando volumes Docker nomeados para preservar as permissões Unix.
+Esses volumes não são movidos para `DATA` nem copiados automaticamente para
+`BACKUPS`.
 
 As credenciais presentes nos arquivos são adequadas somente para laboratório.
 Troque senhas, chaves e demais segredos antes de expor qualquer serviço fora

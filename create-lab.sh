@@ -3,19 +3,21 @@
 set -Eeuo pipefail
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
-BASE="${LAB_BASE:-$SCRIPT_DIR/docker}"
-DATA="${LAB_DATA:-}"
+BASE="${LAB_BASE:-$HOME/docker-shared}"
+DATA="${LAB_DATA:-$HOME/lab-data}"
+BACKUPS="${LAB_BACKUPS:-$HOME/backups}"
 NETWORK="infra-network"
 
 usage() {
   cat <<'EOF'
 Uso: ./create-lab.sh [opções]
 
-  -b, --base DIRETÓRIO   Diretório dos arquivos Compose (padrão: ./docker)
-  -d, --data DIRETÓRIO   Diretório dos dados persistentes (padrão: BASE/data)
+  -b, --base DIRETÓRIO   Diretório das configurações geradas (padrão: ~/docker-shared)
+  -d, --data DIRETÓRIO   Diretório dos dados persistentes (padrão: ~/lab-data)
+  -o, --backups DIRETÓRIO Diretório dos backups (padrão: ~/backups)
   -h, --help             Exibe esta ajuda
 
-As opções também podem ser definidas por LAB_BASE e LAB_DATA.
+As opções também podem ser definidas por LAB_BASE, LAB_DATA e LAB_BACKUPS.
 Os argumentos de linha de comando têm precedência sobre as variáveis.
 EOF
 }
@@ -30,6 +32,11 @@ while (($#)); do
     -d|--data)
       [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
       DATA="$2"
+      shift 2
+      ;;
+    -o|--backups)
+      [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
+      BACKUPS="$2"
       shift 2
       ;;
     -h|--help)
@@ -64,10 +71,8 @@ absolute_path() {
 }
 
 BASE="$(absolute_path "$BASE")"
-if [[ -z "$DATA" ]]; then
-  DATA="$BASE/data"
-fi
 DATA="$(absolute_path "$DATA")"
+BACKUPS="$(absolute_path "$BACKUPS")"
 
 yaml_path() {
   # Aspas simples tornam seguros espaços, dois-pontos e caracteres especiais.
@@ -152,16 +157,17 @@ should_create_service() {
   return 1
 }
 
-mkdir -p "$BASE/scripts"
+mkdir -p "$BASE/scripts" "$BASE/networks" "$BASE/certificates" "$BASE/templates"
+mkdir -p "$BACKUPS/databases" "$BACKUPS/volumes" "$BACKUPS/projects"
 
 if should_create_service "traefik"; then
   mkdir -p "$BASE/traefik"
 fi
 
 if should_create_service "wordpress" || should_create_service "wordpress-db"; then
-  mkdir -p "$BASE/wordpress" "$BASE/wordpress/files" "$BASE/wordpress/secrets" "$BASE/wordpress-db"
+  mkdir -p "$BASE/wordpress" "$BASE/wordpress-db" "$DATA/wordpress/files" "$DATA/wordpress/secrets"
 
-  WORDPRESS_DB_PASSWORD_FILE="$BASE/wordpress/secrets/db_password"
+  WORDPRESS_DB_PASSWORD_FILE="$DATA/wordpress/secrets/db_password"
   if [[ ! -f "$WORDPRESS_DB_PASSWORD_FILE" ]]; then
     printf '%s' 'wordpress123' > "$WORDPRESS_DB_PASSWORD_FILE"
     chmod 600 "$WORDPRESS_DB_PASSWORD_FILE" 2>/dev/null || true
@@ -173,7 +179,7 @@ if should_create_service "mautic" || should_create_service "mautic-db"; then
 fi
 
 if should_create_service "n8n" || should_create_service "n8n-db"; then
-  mkdir -p "$BASE/n8n" "$BASE/n8n/data" "$BASE/n8n/arquivos" "$BASE/n8n-db"
+  mkdir -p "$BASE/n8n" "$BASE/n8n-db" "$DATA/n8n/data" "$DATA/n8n/arquivos"
 fi
 
 if should_create_service "redis"; then
@@ -294,7 +300,7 @@ services:
 
     volumes:
       - wordpress-db-data:/var/lib/mysql
-      - $(yaml_path "$BASE/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
+      - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
 
     networks:
       - infra
@@ -332,8 +338,8 @@ services:
       WORDPRESS_ENVIRONMENT_TYPE: local
 
     volumes:
-      - $(yaml_path "$BASE/wordpress/files:/var/www/html/")
-      - $(yaml_path "$BASE/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
+      - $(yaml_path "$DATA/wordpress/files:/var/www/html/")
+      - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
 
     labels:
       - traefik.enable=true
@@ -499,8 +505,8 @@ services:
       N8N_RESTRICT_FILE_ACCESS_TO: /data/arquivos
 
     volumes:
-      - $(yaml_path "$BASE/n8n/data:/home/node/")
-      - $(yaml_path "$BASE/n8n/arquivos:/data/arquivos")
+      - $(yaml_path "$DATA/n8n/data:/home/node/")
+      - $(yaml_path "$DATA/n8n/arquivos:/data/arquivos")
 
     labels:
       - traefik.enable=true
@@ -851,7 +857,7 @@ fi
 # START-ALL
 #############################################
 
-START_SERVICES=(traefik wordpress-db mautic-db n8n-db redis minio wordpress mautic n8n portainer adminer pgadmin mailhog evolution-db evolution-api)
+START_SERVICES=(traefik wordpress-db mautic-db n8n-db redis wordpress mautic n8n portainer adminer pgadmin mailhog evolution-db evolution-api)
 
 cat > "$BASE/scripts/start-all.sh" <<'EOF_START'
 #!/usr/bin/env bash
@@ -867,6 +873,11 @@ if [[ "${1:-}" == "-b" || "${1:-}" == "--base" ]]; then
 elif [[ $# -gt 0 ]]; then
   echo "Uso: $0 [--base DIRETÓRIO]" >&2
   exit 2
+fi
+
+if [[ ! -d "$BASE" ]]; then
+  echo "Erro: diretório base não encontrado: $BASE" >&2
+  exit 1
 fi
 
 if ! docker info >/dev/null 2>&1; then
@@ -890,6 +901,8 @@ for service in "${START_SERVICES[@]}"; do
 done
 cat >> "$BASE/scripts/start-all.sh" <<'EOF_START_END'
 )
+
+echo "Ignorando minio: imagem configurada indisponível; escolha uma alternativa antes de reativá-lo."
 
 FAILED_SERVICES=()
 
@@ -921,9 +934,10 @@ chmod +x "$BASE/scripts/start-all.sh"
 #############################################
 
 STOP_SERVICES=()
-for service in "${START_SERVICES[@]}"; do
-  STOP_SERVICES+=("$service")
+for ((index=${#START_SERVICES[@]}-1; index>=0; index--)); do
+  STOP_SERVICES+=("${START_SERVICES[index]}")
 done
+STOP_SERVICES+=(minio)
 
 cat > "$BASE/scripts/stop-all.sh" <<'EOF_STOP'
 #!/usr/bin/env bash
@@ -941,6 +955,20 @@ elif [[ $# -gt 0 ]]; then
   exit 2
 fi
 
+if [[ ! -d "$BASE" ]]; then
+  echo "Erro: diretório base não encontrado: $BASE" >&2
+  exit 1
+fi
+
+if ! docker info >/dev/null 2>&1; then
+  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
+  echo "Inicie o systemd e o serviço Docker antes de continuar:" >&2
+  echo "  systemctl is-system-running" >&2
+  echo "  sudo systemctl start docker" >&2
+  echo "Se o WSL não usar systemd, habilite [boot] systemd=true em /etc/wsl.conf e execute 'wsl --shutdown' no PowerShell." >&2
+  exit 1
+fi
+
 SERVICES=(
 EOF_STOP
 for service in "${STOP_SERVICES[@]}"; do
@@ -948,6 +976,8 @@ for service in "${STOP_SERVICES[@]}"; do
 done
 cat >> "$BASE/scripts/stop-all.sh" <<'EOF_STOP_END'
 )
+
+FAILED_SERVICES=()
 
 for service in "${SERVICES[@]}"
 do
@@ -957,9 +987,15 @@ do
   fi
 
   echo "Parando $service"
-  cd -- "$BASE/$service"
-  docker compose down
+  if ! (cd -- "$BASE/$service" && docker compose down); then
+    FAILED_SERVICES+=("$service")
+  fi
 done
+
+if ((${#FAILED_SERVICES[@]})); then
+  printf 'Erro: falha ao parar os seguintes serviços: %s\n' "${FAILED_SERVICES[*]}" >&2
+  exit 1
+fi
 EOF_STOP_END
 
 chmod +x "$BASE/scripts/stop-all.sh"
@@ -1008,7 +1044,194 @@ if should_create_service "evolution-api"; then
   printf '127.0.0.1 evolution-api.lab.local\n' >> "$BASE/hosts-lab.txt"
 fi
 
+cat > "$BASE/scripts/update-hosts.sh" <<'EOF_HOSTS_UPDATE'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+BASE="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
+HOSTS_FILE="$BASE/hosts-lab.txt"
+MODE="both"
+TEMP_FILE=""
+
+cleanup() {
+  if [[ -n "$TEMP_FILE" ]]; then
+    rm -f -- "$TEMP_FILE"
+    TEMP_FILE=""
+  fi
+}
+trap cleanup EXIT
+
+usage() {
+  echo "Uso: $0 [--wsl-only | --windows-only]"
+}
+
+while (($#)); do
+  case "$1" in
+    --wsl-only) MODE="wsl"; shift ;;
+    --windows-only) MODE="windows"; shift ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Erro: opção desconhecida: $1" >&2; usage >&2; exit 2 ;;
+  esac
+done
+
+if [[ ! -s "$HOSTS_FILE" ]]; then
+  echo "Erro: arquivo de hosts ausente ou vazio: $HOSTS_FILE" >&2
+  exit 1
+fi
+
+update_wsl_hosts() {
+  TEMP_FILE="$(mktemp)"
+
+  if ! awk '
+    $0 == "# BEGIN DOCKER LAB" {
+      if (inside) exit 2
+      inside = 1
+      next
+    }
+    $0 == "# END DOCKER LAB" {
+      if (!inside) exit 2
+      inside = 0
+      next
+    }
+    !inside { print }
+    END { if (inside) exit 2 }
+  ' /etc/hosts > "$TEMP_FILE"; then
+    echo "Erro: bloco gerenciado do Docker Lab está malformado em /etc/hosts." >&2
+    cleanup
+    return 1
+  fi
+
+  {
+    printf '\n# BEGIN DOCKER LAB\n'
+    cat -- "$HOSTS_FILE"
+    printf '# END DOCKER LAB\n'
+  } >> "$TEMP_FILE"
+
+  if ! command -v sudo >/dev/null 2>&1; then
+    echo "Erro: sudo é necessário para atualizar /etc/hosts." >&2
+    cleanup
+    return 1
+  fi
+
+  if ! sudo install -o root -g root -m 644 "$TEMP_FILE" /etc/hosts; then
+    cleanup
+    return 1
+  fi
+  cleanup
+  echo "Hosts do WSL atualizados."
+}
+
+update_windows_hosts() {
+  if ! command -v powershell.exe >/dev/null 2>&1; then
+    if [[ "$MODE" == "windows" ]]; then
+      echo "Erro: powershell.exe não foi encontrado. Execute este script no WSL." >&2
+      return 1
+    fi
+    echo "Windows hosts não atualizado: powershell.exe não está disponível."
+    return 0
+  fi
+
+  local windows_script
+  if command -v wslpath >/dev/null 2>&1; then
+    windows_script="$(wslpath -w "$SCRIPT_DIR/update-hosts-windows.ps1")"
+  elif command -v cygpath >/dev/null 2>&1; then
+    windows_script="$(cygpath -w "$SCRIPT_DIR/update-hosts-windows.ps1")"
+  else
+    windows_script="$SCRIPT_DIR/update-hosts-windows.ps1"
+  fi
+
+  powershell.exe -NoProfile -ExecutionPolicy Bypass -File "$windows_script"
+}
+
+case "$MODE" in
+  both)
+    update_wsl_hosts
+    update_windows_hosts
+    ;;
+  wsl) update_wsl_hosts ;;
+  windows) update_windows_hosts ;;
+esac
+EOF_HOSTS_UPDATE
+chmod +x "$BASE/scripts/update-hosts.sh"
+
+cat > "$BASE/scripts/update-hosts-windows.ps1" <<'EOF_WINDOWS_HOSTS'
+$ErrorActionPreference = 'Stop'
+$beginMarker = '# BEGIN DOCKER LAB'
+$endMarker = '# END DOCKER LAB'
+
+function Test-IsAdministrator {
+    $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+    $principal = [Security.Principal.WindowsPrincipal]::new($identity)
+    return $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+}
+
+if (-not (Test-IsAdministrator)) {
+    $tempDirectory = Join-Path $env:TEMP ("docker-lab-hosts-" + [guid]::NewGuid().ToString())
+    New-Item -ItemType Directory -Path $tempDirectory | Out-Null
+    try {
+        $elevatedScriptDirectory = Join-Path $tempDirectory 'scripts'
+        New-Item -ItemType Directory -Path $elevatedScriptDirectory | Out-Null
+        $elevatedScript = Join-Path $elevatedScriptDirectory 'update-hosts-windows.ps1'
+        $elevatedHosts = Join-Path $tempDirectory 'hosts-lab.txt'
+        Copy-Item -LiteralPath $PSCommandPath -Destination $elevatedScript
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\hosts-lab.txt') -Destination $elevatedHosts
+        $arguments = '-NoProfile -ExecutionPolicy Bypass -File "{0}"' -f $elevatedScript
+        $process = Start-Process -FilePath 'powershell.exe' -Verb RunAs -ArgumentList $arguments -Wait -PassThru
+        if ($process.ExitCode -ne 0) {
+            throw "Windows hosts update failed with exit code $($process.ExitCode)."
+        }
+    }
+    finally {
+        Remove-Item -LiteralPath $tempDirectory -Recurse -Force
+    }
+    exit 0
+}
+
+$hostsPath = Join-Path $env:SystemRoot 'System32\drivers\etc\hosts'
+$entriesPath = Join-Path $PSScriptRoot '..\hosts-lab.txt'
+$entries = @(Get-Content -LiteralPath $entriesPath | Where-Object { $_.Trim() -ne '' })
+if ($entries.Count -eq 0) {
+    throw "The hosts file is empty: $entriesPath"
+}
+foreach ($entry in $entries) {
+    if ($entry -notmatch '^\s*127\.0\.0\.1\s+[A-Za-z0-9.-]+\s*$') {
+        throw "Invalid hosts entry: $entry"
+    }
+}
+
+$updatedLines = [System.Collections.Generic.List[string]]::new()
+$insideBlock = $false
+foreach ($line in [System.IO.File]::ReadAllLines($hostsPath)) {
+    if ($line -eq $beginMarker) {
+        if ($insideBlock) { throw 'Nested DOCKER LAB blocks in hosts file.' }
+        $insideBlock = $true
+        continue
+    }
+    if ($line -eq $endMarker) {
+        if (-not $insideBlock) { throw 'End marker without a start marker in hosts file.' }
+        $insideBlock = $false
+        continue
+    }
+    if (-not $insideBlock) { $updatedLines.Add($line) }
+}
+if ($insideBlock) { throw 'DOCKER LAB block has no end marker in hosts file.' }
+if ($updatedLines.Count -gt 0 -and $updatedLines[$updatedLines.Count - 1] -ne '') {
+    $updatedLines.Add('')
+}
+$updatedLines.Add($beginMarker)
+foreach ($entry in $entries) { $updatedLines.Add($entry) }
+$updatedLines.Add($endMarker)
+
+$encoding = [System.Text.UTF8Encoding]::new($false)
+[System.IO.File]::WriteAllLines($hostsPath, $updatedLines.ToArray(), $encoding)
+Write-Output 'Hosts do Windows atualizados.'
+EOF_WINDOWS_HOSTS
+
 printf "\nInfraestrutura criada com sucesso.\n"
-printf "\nAdicione as entradas de %s/hosts-lab.txt ao arquivo hosts do sistema.\n" "$BASE"
+printf "\nConfigurações: %s\nDados persistentes: %s\nBackups: %s\n" "$BASE" "$DATA" "$BACKUPS"
+printf "\nPara atualizar os hosts do WSL e do Windows, execute:\n"
+printf "%s/scripts/update-hosts.sh\n" "$BASE"
 printf "\nExecute:\n"
 printf "%s/scripts/start-all.sh\n" "$BASE"

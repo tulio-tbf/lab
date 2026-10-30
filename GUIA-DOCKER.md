@@ -1,10 +1,10 @@
 # Guia de administração do Docker Lab
 
 Este guia considera que os comandos serão executados no WSL ou em um terminal
-Linux e que o laboratório está localizado em `/mnt/d/lab/docker`.
+Linux e que as configurações do laboratório estão em `~/docker-shared`.
 
 ```bash
-cd /mnt/d/lab/docker
+cd ~/docker-shared
 ```
 
 > As credenciais incluídas neste laboratório são destinadas somente ao
@@ -29,6 +29,11 @@ Parar e remover os containers e redes Compose:
 ```bash
 ./scripts/stop-all.sh
 ```
+
+O script para os serviços em ordem inversa à inicialização e continua tentando
+os demais se algum `docker compose down` falhar; ao final, lista as falhas.
+Ele verifica se o Docker Engine está acessível antes de começar. A opção
+`down` não remove os volumes nomeados dos bancos.
 
 Listar containers em execução:
 
@@ -57,10 +62,81 @@ docker network inspect infra-network
 O script `start-all.sh` cria essa rede automaticamente quando ela ainda não
 existe.
 
-Para resolver os domínios `*.lab.local` dentro do WSL, as entradas de
-`hosts-lab.txt` também precisam estar em `/etc/hosts`. Para acessá-los pelo
-navegador do Windows, adicione as mesmas entradas ao arquivo de hosts do
-Windows.
+## Resultado dos testes (30/10/2026)
+
+Foram encontrados 14 containers em execução na rede `infra-network`. Os
+endpoints HTTP testados dos serviços disponíveis responderam, exceto o
+WordPress, que retorna erro de banco. O MinIO não possui container criado
+nesta instalação.
+
+| Serviço | Resultado observado |
+|---|---|
+| Traefik | Dashboard/API respondendo (HTTP 200). |
+| WordPress | HTTP 500, “Error establishing a database connection”. A conexão do PHP ao MySQL foi confirmada; o banco `wordpress` tem 0 tabelas. |
+| Mautic | Página de instalação respondendo (HTTP 200); MariaDB disponível, banco `mautic` com 0 tabelas. |
+| n8n | `/healthz` responde HTTP 200; versão 2.45.7. Banco SQLite íntegro, com 11 workflows, 4 credenciais e 1 usuário. Os workflows estavam inativos. |
+| Redis | `PING` responde `PONG`. |
+| MinIO | Não está em execução e não há container criado. |
+| Portainer | API responde, versão 2.45.3; a inicialização do administrador expirou. |
+| Adminer | Interface responde HTTP 200. |
+| pgAdmin | Endpoint de verificação `/misc/ping` responde HTTP 200. |
+| MailHog | Interface e API respondem HTTP 200; SMTP aceitou as mensagens de teste. |
+| Evolution API | API responde HTTP 200, versão 2.3.7; `evolution-db` está saudável e tem 37 tabelas. |
+
+O `start-all.sh` tenta iniciar os serviços configurados e informa falhas ao
+final. O MinIO está temporariamente fora da lista de inicialização porque a
+imagem `minio/minio` configurada não está disponível. O script informa que o
+está ignorando e continua com os demais serviços; falhas em outros serviços
+continuam sendo reportadas normalmente.
+
+Os containers MySQL e MariaDB estão disponíveis, embora seus bancos
+`wordpress` e `mautic` tenham 0 tabelas. Os dois PostgreSQL aceitam conexões;
+`evolution-db` tem 37 tabelas e `n8n-db` tem 0. O container `n8n-db` está
+ativo, mas não é usado pelo n8n desta instalação: o Compose não configura
+`DB_TYPE=postgresdb` e o n8n usa o SQLite restaurado em
+`~/lab-data/n8n/data/.n8n/database.sqlite`.
+
+## Usuários e senhas padrão
+
+Estas credenciais são somente para laboratório local. As credenciais abaixo
+foram conferidas nas configurações geradas; a existência de uma conta de
+aplicação depende de a instalação inicial ter sido concluída.
+
+| Serviço | Usuário/chave | Senha | Estado/notas |
+|---|---|---|---|
+| Traefik | — | — | Dashboard sem autenticação; não exponha fora da máquina local. |
+| WordPress | — | — | Nenhum usuário do site foi configurado. O banco está vazio e o site retorna erro. |
+| MySQL do WordPress | `wordpress` | `wordpress123` | O segredo também está em `~/lab-data/wordpress/secrets/db_password`. Administrador: `root` / `root123`. |
+| Mautic | — | — | Ainda na instalação inicial; crie o primeiro usuário no assistente. Use `dev@lab.local` como email. |
+| MariaDB do Mautic | `mautic` | `mautic123` | Administrador: `root` / `root123`. |
+| n8n | `admin@lab.local` | Senha existente, não definida pelo Compose | Conta restaurada do banco antigo; use a senha já cadastrada. |
+| PostgreSQL `n8n-db` | `n8n` | `n8n123` | Credencial definida no Compose, mas este banco não é usado pelo n8n atual. |
+| Redis | — | — | Sem autenticação configurada. |
+| MinIO | `admin` | `admin123` | Valores ainda definidos no Compose; serviço desativado na inicialização até a escolha de uma imagem disponível. |
+| Portainer | — | — | A inicialização do administrador expirou; não há senha padrão. Reinicie o container e conclua a criação do administrador em até 5 minutos. |
+| Adminer | — | — | Sem conta própria; use as credenciais do banco selecionado. |
+| pgAdmin | `admin@example.com` | `admin123` | Email/senha de bootstrap definidos no Compose. Para novas contas, o email padrão é `dev@lab.local`; mudar a variável do Compose não altera um usuário já gravado no volume. |
+| MailHog | — | — | Sem autenticação. |
+| Evolution API | API key: `change-me` | — | Chave definida no Compose; troque-a antes de qualquer exposição além do laboratório local. |
+| PostgreSQL da Evolution API | `postgres` | `postgres123` | Banco `evolution`. |
+
+As senhas de banco são valores de desenvolvimento e devem ser substituídas
+antes de qualquer uso fora do computador local.
+
+Para atualizar os domínios `*.lab.local` no WSL e no Windows, execute o
+sincronizador gerado. Ele atualiza apenas o bloco gerenciado do Docker Lab,
+pede `sudo` para o WSL e solicita elevação do UAC para o Windows:
+
+```bash
+~/docker-shared/scripts/update-hosts.sh
+```
+
+Também é possível atualizar apenas um dos arquivos:
+
+```bash
+~/docker-shared/scripts/update-hosts.sh --wsl-only
+~/docker-shared/scripts/update-hosts.sh --windows-only
+```
 
 ## Gerenciar um serviço
 
@@ -68,7 +144,7 @@ Substitua `<servico>` pelo diretório desejado, por exemplo `wordpress`,
 `wordpress-db`, `evolution-api` ou `evolution-db`.
 
 ```bash
-cd /mnt/d/lab/docker/<servico>
+cd ~/docker-shared/<servico>
 ```
 
 Criar ou iniciar:
@@ -130,7 +206,7 @@ Para atualizar o n8n, use o script abaixo. Ele só recria o container se o
 download da imagem terminar com sucesso:
 
 ```bash
-cd /mnt/d/lab/docker/n8n
+cd ~/docker-shared/n8n
 ./update.sh
 ```
 
@@ -234,10 +310,16 @@ docker exec wordpress php -m
 Os arquivos persistentes também estão disponíveis no host:
 
 ```bash
-cd /mnt/d/lab/docker/wordpress/files
+cd ~/lab-data/wordpress/files
 ```
 
 Site: <http://wordpress.lab.local>
+
+No momento da verificação, o WordPress consegue abrir uma conexão MySQL, mas
+`wordpress` ainda não tem tabelas e a página mostra erro de banco. Não há
+usuário/senha de administrador do site para informar. Depois de restaurar o
+banco ou concluir uma instalação nova, use `dev@lab.local` como email de
+administrador.
 
 O serviço registra `wordpress.lab.local` como alias na rede Docker
 `infra-network`. Portanto, essa mesma URL pode ser usada nas credenciais do
@@ -252,7 +334,7 @@ e altere o tipo de ambiente para `production`.
 O WordPress e o MySQL leem a senha compartilhada do arquivo:
 
 ```text
-/mnt/d/lab/docker/wordpress/secrets/db_password
+~/lab-data/wordpress/secrets/db_password
 ```
 
 Para trocar a senha, altere primeiro o usuário no MySQL, atualize o arquivo
@@ -283,6 +365,10 @@ docker exec -i wordpress-db mysql -uwordpress -pwordpress123 wordpress < wordpre
 ```
 
 ### Mautic
+
+O Mautic está na tela de instalação e o banco ainda não contém tabelas. Crie o
+primeiro usuário pelo assistente usando `dev@lab.local` como email; não existe
+uma senha padrão de aplicação nesta instalação.
 
 ```bash
 docker exec -it mautic sh
@@ -326,7 +412,7 @@ docker exec n8n n8n --version
 docker logs -f --tail=200 n8n
 ```
 
-O diretório do host `/mnt/d/lab/docker/n8n/arquivos` fica disponível dentro
+O diretório do host `~/lab-data/n8n/arquivos` fica disponível dentro
 do container como `/data/arquivos`. Nos nós **Read/Write Files from Disk**,
 **Local File Trigger** e similares, sempre utilize o caminho interno:
 
@@ -339,7 +425,39 @@ nós de arquivo a esse diretório.
 
 Aplicação: <http://n8n.lab.local>
 
-### Banco do n8n — PostgreSQL
+O n8n está usando SQLite, restaurado da instalação anterior. A conta existente
+é `admin@lab.local`; a senha não vem do Compose e deve ser a senha já usada na
+instalação antiga. Há 11 workflows e 4 credenciais restaurados. Todos os
+workflows estavam inativos na origem; confira-os antes de ativar.
+
+#### Backup do banco SQLite ativo
+
+Use a API de backup do SQLite, que inclui os dados ainda registrados no WAL,
+e guarde também o arquivo de configuração com a chave necessária para
+descriptografar as credenciais:
+
+```bash
+mkdir -p ~/backups/databases
+backup="$HOME/backups/databases/n8n-$(date +%F-%H%M%S).sqlite"
+python3 - "$HOME/lab-data/n8n/data/.n8n/database.sqlite" "$backup" <<'PY'
+import sqlite3
+import sys
+
+source = sqlite3.connect(f"file:{sys.argv[1]}?mode=ro", uri=True)
+destination = sqlite3.connect(sys.argv[2])
+source.backup(destination)
+print(destination.execute("PRAGMA integrity_check").fetchone()[0])
+destination.close()
+source.close()
+PY
+install -m 600 ~/lab-data/n8n/data/.n8n/config "${backup%.sqlite}-config.json"
+```
+
+O serviço `n8n-db` (PostgreSQL) continua incluído e ativo, mas não é o banco
+usado pelo n8n atual. Ele está vazio. Um dump desse PostgreSQL não contém os
+workflows nem as credenciais da aplicação.
+
+### PostgreSQL `n8n-db` (não usado pelo n8n atual)
 
 ```bash
 docker exec -it n8n-db psql -U n8n -d n8n
@@ -374,10 +492,12 @@ docker inspect minio
 
 Console: <http://minio.lab.local>
 
-O Compose ainda referencia `minio/minio`, cuja imagem comunitária não está
-mais disponível no registry público. O inicializador continua os demais
-serviços e informa `minio` como falha; é necessário escolher uma imagem
-compatível ou fornecer uma imagem MinIO construída localmente.
+O Compose ainda referencia `minio/minio`, cuja imagem não está disponível no
+Docker Hub. O projeto original foi descontinuado; a opção oficial atual é
+MinIO AIStor, que requer licença. Por enquanto, `start-all.sh` ignora esse
+serviço para não interromper o laboratório. O Compose e os dados em
+`~/lab-data/minio` foram preservados; não execute `docker compose up` nesse
+diretório até escolher uma imagem compatível e confirmar seus requisitos.
 
 Para administrar pela CLI, use um container temporário:
 
@@ -394,6 +514,14 @@ docker inspect portainer
 ```
 
 Interface: <http://portainer.lab.local>
+
+Na validação, o Portainer informou `Administrator initialization timeout`.
+Para reabrir o cadastro, reinicie o serviço e crie o administrador pela
+interface em até 5 minutos:
+
+```bash
+docker compose -f ~/docker-shared/portainer/docker-compose.yml restart
+```
 
 ### Adminer
 
@@ -432,6 +560,36 @@ O servidor SMTP fica disponível para os outros containers como `mailhog:1025`.
 No host, as portas são `1026` (SMTP) e `8026` (interface web), para evitar
 conflito com outros serviços que já usem `1025` e `8025`.
 
+Configuração SMTP para clientes dentro do Docker:
+
+- Host: `mailhog`
+- Porta: `1025`
+- Segurança/TLS: desativada
+- Autenticação: desativada
+- Remetente e endereço de teste: `dev@lab.local`
+
+Em 30/10/2026, foi feito um teste SMTP real a partir do namespace de rede de
+cada um dos 14 containers ativos. O MailHog aceitou as 14 mensagens, que podem
+ser conferidas na interface acima procurando o assunto
+`DOCKER-LAB-NETWORK-TEST`. O teste usou um cliente auxiliar temporário na rede
+de cada container: comprova DNS, conexão TCP e aceitação SMTP pelo MailHog,
+mas **não configura o envio de email dentro de cada aplicação**. O MailHog
+somente captura as mensagens e não as entrega a destinatários externos.
+
+Para envio feito pelas próprias aplicações, configure o cliente correspondente:
+
+- **WordPress:** configure um plugin SMTP (por exemplo, WP Mail SMTP) com os
+  valores acima. O site precisa ter banco/tabelas e estar inicializado antes
+  disso; atualmente ele apresenta erro de banco.
+- **Mautic:** após concluir a instalação, configure o transporte de email como
+  SMTP, host `mailhog`, porta `1025`, sem TLS nem autenticação, e remetente
+  `dev@lab.local`.
+- **n8n:** crie uma credencial SMTP para o nó **Send Email** com host `mailhog`,
+  porta `1025`, sem SSL/TLS nem autenticação; use `dev@lab.local` como remetente.
+- **Demais containers:** o teste confirma que alcançam o servidor SMTP, mas
+  serviços como bancos, Redis, Traefik e Evolution API não têm configuração de
+  envio de email declarada no Compose.
+
 ### Evolution API
 
 ```bash
@@ -449,7 +607,7 @@ Aplicação: <http://evolution-api.lab.local>
 Depois de qualquer alteração no Compose:
 
 ```bash
-cd /mnt/d/lab/docker/evolution-api
+cd ~/docker-shared/evolution-api
 docker compose config
 docker compose up -d --force-recreate
 ```
@@ -503,7 +661,7 @@ aplicação.
 
 ```bash
 docker ps -a
-docker compose -f /mnt/d/lab/docker/<servico>/docker-compose.yml config
+docker compose -f ~/docker-shared/<servico>/docker-compose.yml config
 docker logs --tail=200 <container>
 docker inspect <container>
 docker network inspect infra-network
