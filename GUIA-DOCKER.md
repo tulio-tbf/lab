@@ -54,6 +54,14 @@ Verificar a rede compartilhada:
 docker network inspect infra-network
 ```
 
+O script `start-all.sh` cria essa rede automaticamente quando ela ainda não
+existe.
+
+Para resolver os domínios `*.lab.local` dentro do WSL, as entradas de
+`hosts-lab.txt` também precisam estar em `/etc/hosts`. Para acessá-los pelo
+navegador do Windows, adicione as mesmas entradas ao arquivo de hosts do
+Windows.
+
 ## Gerenciar um serviço
 
 Substitua `<servico>` pelo diretório desejado, por exemplo `wordpress`,
@@ -137,6 +145,7 @@ que já está armazenada localmente.
 Os bancos usam os volumes Docker nomeados `wordpress-db-data`,
 `mautic-db-data`, `n8n-db-data` e `evolution-db-data`. Isso evita problemas de
 permissão dos bancos em diretórios Windows montados no WSL.
+O pgAdmin também usa o volume nomeado `pgadmin-data` pelo mesmo motivo.
 
 ## Inspecionar e diagnosticar containers
 
@@ -365,6 +374,11 @@ docker inspect minio
 
 Console: <http://minio.lab.local>
 
+O Compose ainda referencia `minio/minio`, cuja imagem comunitária não está
+mais disponível no registry público. O inicializador continua os demais
+serviços e informa `minio` como falha; é necessário escolher uma imagem
+compatível ou fornecer uma imagem MinIO construída localmente.
+
 Para administrar pela CLI, use um container temporário:
 
 ```bash
@@ -415,6 +429,8 @@ docker inspect mailhog
 Interface: <http://mailhog.lab.local>
 
 O servidor SMTP fica disponível para os outros containers como `mailhog:1025`.
+No host, as portas são `1026` (SMTP) e `8026` (interface web), para evitar
+conflito com outros serviços que já usem `1025` e `8025`.
 
 ### Evolution API
 

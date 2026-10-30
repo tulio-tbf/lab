@@ -22,6 +22,11 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! docker network inspect infra-network >/dev/null 2>&1; then
+  echo "Criando a rede compartilhada infra-network"
+  docker network create infra-network >/dev/null
+fi
+
 SERVICES=(
   traefik
   wordpress-db
@@ -40,11 +45,24 @@ SERVICES=(
   evolution-api
 )
 
+FAILED_SERVICES=()
+
 for service in "${SERVICES[@]}"
 do
+  if [[ ! -f "$BASE/$service/docker-compose.yml" ]]; then
+    echo "Ignorando $service: arquivo docker-compose.yml não encontrado em $BASE/$service"
+    continue
+  fi
+
   echo "Subindo $service"
-  cd -- "$BASE/$service"
-  docker compose up -d
+  if ! (cd -- "$BASE/$service" && docker compose up -d); then
+    FAILED_SERVICES+=("$service")
+  fi
 done
 
 docker ps
+
+if ((${#FAILED_SERVICES[@]})); then
+  printf 'Erro: falha ao subir os seguintes serviços: %s\n' "${FAILED_SERVICES[*]}" >&2
+  exit 1
+fi

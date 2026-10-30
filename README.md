@@ -99,8 +99,8 @@ Os scripts gerados descobrem o diretório base pela sua própria localização:
 O diretório também pode ser sobrescrito:
 
 ```bash
-LAB_BASE=/opt/docker-lab ./script/start-all.sh
-./script/stop-all.sh --base /opt/docker-lab
+LAB_BASE=/opt/docker-lab ./scripts/start-all.sh
+./scripts/stop-all.sh --base /opt/docker-lab
 ```
 
 ## Hosts locais
@@ -108,8 +108,19 @@ LAB_BASE=/opt/docker-lab ./script/start-all.sh
 O instalador gera `hosts-lab.txt` no diretório base somente com os serviços
 selecionados. Adicione seu conteúdo ao arquivo de hosts:
 
-- Linux e WSL: `/etc/hosts`
+- Linux e WSL: `/etc/hosts` (necessário para acessar os domínios a partir do WSL)
 - Windows: `C:\Windows\System32\drivers\etc\hosts`
+
+No WSL, acrescente as entradas que ainda não existirem:
+
+```bash
+while IFS= read -r entry; do
+  grep -Fqx "$entry" /etc/hosts || printf '%s\n' "$entry" | sudo tee -a /etc/hosts >/dev/null
+done < ./hosts-lab.txt
+```
+
+Para acessar os serviços pelo navegador do Windows, adicione também as entradas
+ao arquivo `hosts` do Windows.
 
 Endereços disponíveis incluem:
 
@@ -127,8 +138,8 @@ Endereços disponíveis incluem:
 ## Persistência e segurança
 
 Os arquivos das aplicações e demais bind mounts usam os diretórios escolhidos
-em `BASE` e `DATA`. Os bancos MySQL, MariaDB e PostgreSQL usam volumes Docker
-nomeados para garantir as permissões Unix exigidas pelos bancos, inclusive
+em `BASE` e `DATA`. Os bancos MySQL, MariaDB e PostgreSQL e os dados do pgAdmin usam volumes Docker
+nomeados para garantir as permissões Unix exigidas pelos serviços, inclusive
 quando o laboratório está localizado em `/mnt` no WSL.
 
 As credenciais presentes nos arquivos são adequadas somente para laboratório.

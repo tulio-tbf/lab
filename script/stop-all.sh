@@ -33,6 +33,11 @@ SERVICES=(
 
 for service in "${SERVICES[@]}"
 do
+  if [[ ! -f "$BASE/$service/docker-compose.yml" ]]; then
+    echo "Ignorando $service: arquivo docker-compose.yml não encontrado em $BASE/$service"
+    continue
+  fi
+
   echo "Parando $service"
   cd -- "$BASE/$service"
   docker compose down

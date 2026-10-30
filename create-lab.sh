@@ -661,8 +661,8 @@ services:
     restart: unless-stopped
 
     ports:
-      - "8025:8025"
-      - "1025:1025"
+      - "8026:8025"
+      - "1026:1025"
 
     labels:
       - traefik.enable=true
@@ -723,11 +723,11 @@ services:
     restart: unless-stopped
 
     environment:
-      PGADMIN_DEFAULT_EMAIL: admin@lab.local
+      PGADMIN_DEFAULT_EMAIL: admin@example.com
       PGADMIN_DEFAULT_PASSWORD: admin123
 
     volumes:
-      - $(yaml_path "$DATA/pgadmin:/var/lib/pgadmin")
+      - pgadmin-data:/var/lib/pgadmin
 
     labels:
       - traefik.enable=true
@@ -744,6 +744,7 @@ networks:
 
 volumes:
   pgadmin-data:
+    name: pgadmin-data
 EOF_PGADMIN
 fi
 
@@ -850,12 +851,7 @@ fi
 # START-ALL
 #############################################
 
-START_SERVICES=()
-for service in traefik wordpress-db mautic-db n8n-db redis minio wordpress mautic n8n portainer adminer pgadmin mailhog evolution-db evolution-api; do
-  if should_create_service "$service"; then
-    START_SERVICES+=("$service")
-  fi
-done
+START_SERVICES=(traefik wordpress-db mautic-db n8n-db redis minio wordpress mautic n8n portainer adminer pgadmin mailhog evolution-db evolution-api)
 
 cat > "$BASE/scripts/start-all.sh" <<'EOF_START'
 #!/usr/bin/env bash
@@ -882,6 +878,11 @@ if ! docker info >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! docker network inspect infra-network >/dev/null 2>&1; then
+  echo "Criando a rede compartilhada infra-network"
+  docker network create infra-network >/dev/null
+fi
+
 SERVICES=(
 EOF_START
 for service in "${START_SERVICES[@]}"; do
@@ -890,14 +891,27 @@ done
 cat >> "$BASE/scripts/start-all.sh" <<'EOF_START_END'
 )
 
+FAILED_SERVICES=()
+
 for service in "${SERVICES[@]}"
 do
+  if [[ ! -f "$BASE/$service/docker-compose.yml" ]]; then
+    echo "Ignorando $service: arquivo docker-compose.yml não encontrado em $BASE/$service"
+    continue
+  fi
+
   echo "Subindo $service"
-  cd -- "$BASE/$service"
-  docker compose up -d
+  if ! (cd -- "$BASE/$service" && docker compose up -d); then
+    FAILED_SERVICES+=("$service")
+  fi
 done
 
 docker ps
+
+if ((${#FAILED_SERVICES[@]})); then
+  printf 'Erro: falha ao subir os seguintes serviços: %s\n' "${FAILED_SERVICES[*]}" >&2
+  exit 1
+fi
 EOF_START_END
 
 chmod +x "$BASE/scripts/start-all.sh"
@@ -937,6 +951,11 @@ cat >> "$BASE/scripts/stop-all.sh" <<'EOF_STOP_END'
 
 for service in "${SERVICES[@]}"
 do
+  if [[ ! -f "$BASE/$service/docker-compose.yml" ]]; then
+    echo "Ignorando $service: arquivo docker-compose.yml não encontrado em $BASE/$service"
+    continue
+  fi
+
   echo "Parando $service"
   cd -- "$BASE/$service"
   docker compose down
