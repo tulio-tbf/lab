@@ -6,7 +6,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BASE="${LAB_BASE:-$HOME/docker-shared}"
 DATA="${LAB_DATA:-$HOME/lab-data}"
 BACKUPS="${LAB_BACKUPS:-$HOME/backups}"
+DOMAIN="${LAB_DOMAIN:-lab.test}"
 NETWORK="infra-network"
+
+# shellcheck source=lib/platform.sh
+source "$SCRIPT_DIR/lib/platform.sh"
 
 usage() {
   cat <<'EOF'
@@ -15,9 +19,11 @@ Uso: ./create-lab.sh [opções]
   -b, --base DIRETÓRIO   Diretório das configurações geradas (padrão: ~/docker-shared)
   -d, --data DIRETÓRIO   Diretório dos dados persistentes (padrão: ~/lab-data)
   -o, --backups DIRETÓRIO Diretório dos backups (padrão: ~/backups)
+  -D, --domain DOMÍNIO   Domínio local dos serviços (padrão: lab.test)
   -h, --help             Exibe esta ajuda
 
-As opções também podem ser definidas por LAB_BASE, LAB_DATA e LAB_BACKUPS.
+As opções também podem ser definidas por LAB_BASE, LAB_DATA, LAB_BACKUPS e
+LAB_DOMAIN.
 Os argumentos de linha de comando têm precedência sobre as variáveis.
 EOF
 }
@@ -37,6 +43,11 @@ while (($#)); do
     -o|--backups)
       [[ $# -ge 2 ]] || { echo "Erro: $1 requer um diretório." >&2; exit 2; }
       BACKUPS="$2"
+      shift 2
+      ;;
+    -D|--domain)
+      [[ $# -ge 2 ]] || { echo "Erro: $1 requer um domínio." >&2; exit 2; }
+      DOMAIN="$2"
       shift 2
       ;;
     -h|--help)
@@ -74,6 +85,17 @@ BASE="$(absolute_path "$BASE")"
 DATA="$(absolute_path "$DATA")"
 BACKUPS="$(absolute_path "$BACKUPS")"
 
+DOMAIN="$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
+if [[ ! "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
+  echo "Erro: domínio inválido: $DOMAIN" >&2
+  exit 2
+fi
+if [[ "$DOMAIN" == *.local ]]; then
+  echo "Aviso: no macOS, domínios .local passam pelo mDNS (Bonjour) e podem demorar segundos para resolver." >&2
+fi
+DOMAIN_REGEX="${DOMAIN//./\\.}"
+SSH_AGENT_MOUNT="$(lab_ssh_agent_mount_source):/run/host-ssh-agent"
+
 yaml_path() {
   # Aspas simples tornam seguros espaços, dois-pontos e caracteres especiais.
   printf "'%s'" "${1//\'/\'\'}"
@@ -108,23 +130,21 @@ else
   done
 fi
 
-declare -A DEPENDENCIES=(
-  [traefik]=""
-  [wordpress-db]=""
-  [wordpress]="wordpress-db traefik"
-  [mautic-db]=""
-  [mautic]="mautic-db traefik"
-  [n8n-db]=""
-  [n8n]="n8n-db traefik"
-  [redis]=""
-  [minio]="traefik"
-  [portainer]="traefik"
-  [adminer]="traefik"
-  [pgadmin]="traefik"
-  [mailhog]="traefik"
-  [evolution-db]=""
-  [evolution-api]="evolution-db redis traefik"
-)
+if ((${#SELECTED_SERVICES[@]} == 0)); then
+  echo "Nenhum serviço informado."
+  exit 1
+fi
+
+# Função em vez de array associativo para funcionar no Bash 3.2 do macOS.
+service_dependencies() {
+  case "$1" in
+    wordpress) echo "wordpress-db traefik" ;;
+    mautic) echo "mautic-db traefik" ;;
+    n8n) echo "n8n-db traefik" ;;
+    minio|portainer|adminer|pgadmin|mailhog) echo "traefik" ;;
+    evolution-api) echo "evolution-db redis traefik" ;;
+  esac
+}
 
 service_requires() {
   local service="$1"
@@ -135,7 +155,7 @@ service_requires() {
     return 0
   fi
 
-  for dep in ${DEPENDENCIES[$service]}; do
+  for dep in $(service_dependencies "$service"); do
     if [[ "$dep" == "$target" ]] || service_requires "$dep" "$target"; then
       return 0
     fi
@@ -158,6 +178,7 @@ should_create_service() {
 }
 
 mkdir -p "$BASE/scripts" "$BASE/networks" "$BASE/certificates" "$BASE/templates"
+cp -- "$SCRIPT_DIR/lib/platform.sh" "$BASE/scripts/platform.sh"
 mkdir -p "$BACKUPS/databases" "$BACKUPS/volumes" "$BACKUPS/projects"
 
 if should_create_service "traefik"; then
@@ -232,6 +253,7 @@ if should_create_service "evolution-api"; then
   mkdir -p "$DATA/evolution-api"
 fi
 
+lab_require_docker || exit 1
 docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
 
 #############################################
@@ -239,7 +261,7 @@ docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NET
 #############################################
 
 if should_create_service "traefik"; then
-cat > "$BASE/traefik/docker-compose.yml" <<'EOF_TRAEFIK'
+cat > "$BASE/traefik/docker-compose.yml" <<EOF_TRAEFIK
 services:
   traefik:
     image: traefik:v3
@@ -262,12 +284,12 @@ services:
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.traefik.rule=Host(`traefik.lab.local`)
+      - traefik.http.routers.traefik.rule=Host(\`traefik.${DOMAIN}\`)
       - traefik.http.routers.traefik.entrypoints=web
       - traefik.http.routers.traefik.service=api@internal
       - traefik.http.routers.traefik.middlewares=dashboard
-      - traefik.http.middlewares.dashboard.redirectregex.regex=^http://traefik\.lab\.local/?$
-      - traefik.http.middlewares.dashboard.redirectregex.replacement=http://traefik.lab.local/dashboard/
+      - traefik.http.middlewares.dashboard.redirectregex.regex=^http://traefik\\.${DOMAIN_REGEX}/?\$
+      - traefik.http.middlewares.dashboard.redirectregex.replacement=http://traefik.${DOMAIN}/dashboard/
 
     networks:
       - infra
@@ -352,19 +374,19 @@ services:
       WORDPRESS_ENVIRONMENT_TYPE: local
 
     volumes:
-      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
+      - ${SSH_AGENT_MOUNT}
       - $(yaml_path "$DATA/wordpress/files:/var/www/html/")
       - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.wordpress.rule=Host(\`wordpress.lab.local\`)
+      - traefik.http.routers.wordpress.rule=Host(\`wordpress.${DOMAIN}\`)
       - traefik.http.services.wordpress.loadbalancer.server.port=80
 
     networks:
       infra:
         aliases:
-          - wordpress.lab.local
+          - wordpress.${DOMAIN}
 
 networks:
   infra:
@@ -445,7 +467,7 @@ services:
       MAUTIC_DB_DATABASE: mautic
 
     volumes:
-      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
+      - ${SSH_AGENT_MOUNT}
       - mautic-config-data:/var/www/html/config
       - mautic-media-files-data:/var/www/html/docroot/media/files
       - mautic-media-images-data:/var/www/html/docroot/media/images
@@ -453,7 +475,7 @@ services:
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.mautic.rule=Host(\`mautic.lab.local\`)
+      - traefik.http.routers.mautic.rule=Host(\`mautic.${DOMAIN}\`)
       - traefik.http.services.mautic.loadbalancer.server.port=80
 
     networks:
@@ -528,20 +550,20 @@ services:
 
     environment:
       SSH_AUTH_SOCK: /run/host-ssh-agent
-      N8N_HOST: n8n.lab.local
+      N8N_HOST: n8n.${DOMAIN}
       N8N_PROTOCOL: http
       N8N_SECURE_COOKIE: "false"
-      WEBHOOK_URL: http://n8n.lab.local/
+      WEBHOOK_URL: http://n8n.${DOMAIN}/
       N8N_RESTRICT_FILE_ACCESS_TO: /data/arquivos
 
     volumes:
-      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
+      - ${SSH_AGENT_MOUNT}
       - $(yaml_path "$DATA/n8n/data:/home/node/")
       - $(yaml_path "$DATA/n8n/arquivos:/data/arquivos")
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.n8n.rule=Host(\`n8n.lab.local\`)
+      - traefik.http.routers.n8n.rule=Host(\`n8n.${DOMAIN}\`)
       - traefik.http.services.n8n.loadbalancer.server.port=5678
 
     networks:
@@ -561,20 +583,9 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd -- "$SCRIPT_DIR"
 
-if ! docker info >/dev/null 2>&1; then
-  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
-  echo "Verifique o systemd e execute: sudo systemctl start docker" >&2
-  exit 1
-fi
-
-if [[ -z "${SSH_AUTH_SOCK:-}" && -S "$HOME/.ssh/docker-lab-agent.sock" ]]; then
-  SSH_AUTH_SOCK="$HOME/.ssh/docker-lab-agent.sock"
-  export SSH_AUTH_SOCK
-fi
-
-if [[ ! -S "${SSH_AUTH_SOCK:-}" ]]; then
-  echo "Aviso: agente SSH não encontrado; Git por SSH ficará indisponível no n8n." >&2
-fi
+source "$SCRIPT_DIR/../scripts/platform.sh"
+lab_require_docker || exit 1
+lab_check_ssh_agent "no n8n"
 
 echo "Baixando a imagem atual do n8n..."
 if ! docker compose pull; then
@@ -640,7 +651,7 @@ services:
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.minio.rule=Host(\`minio.lab.local\`)
+      - traefik.http.routers.minio.rule=Host(\`minio.${DOMAIN}\`)
       - traefik.http.services.minio.loadbalancer.server.port=9001
 
     networks:
@@ -676,7 +687,7 @@ services:
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.portainer.rule=Host(\`portainer.lab.local\`)
+      - traefik.http.routers.portainer.rule=Host(\`portainer.${DOMAIN}\`)
       - traefik.http.services.portainer.loadbalancer.server.port=9000
 
     networks:
@@ -697,14 +708,20 @@ fi
 #############################################
 
 if should_create_service "mailhog"; then
-cat > "$BASE/mailhog/docker-compose.yml" <<'EOF_MAILHOG'
+cat > "$BASE/mailhog/docker-compose.yml" <<EOF_MAILHOG
 services:
   mailhog:
-    image: mailhog/mailhog:latest
+    # Mailpit substitui o MailHog (abandonado e sem imagem arm64) mantendo o
+    # nome mailhog e as portas, para não quebrar o SMTP já configurado nas apps.
+    image: axllent/mailpit:latest
 
     container_name: mailhog
 
     restart: unless-stopped
+
+    environment:
+      MP_SMTP_AUTH_ACCEPT_ANY: "1"
+      MP_SMTP_AUTH_ALLOW_INSECURE: "1"
 
     ports:
       - "8026:8025"
@@ -712,7 +729,7 @@ services:
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.mailhog.rule=Host(`mailhog.lab.local`)
+      - traefik.http.routers.mailhog.rule=Host(\`mailhog.${DOMAIN}\`)
       - traefik.http.services.mailhog.loadbalancer.server.port=8025
 
     networks:
@@ -730,7 +747,7 @@ fi
 #############################################
 
 if should_create_service "adminer"; then
-cat > "$BASE/adminer/docker-compose.yml" <<'EOF_ADMINER'
+cat > "$BASE/adminer/docker-compose.yml" <<EOF_ADMINER
 services:
   adminer:
     image: adminer
@@ -741,7 +758,7 @@ services:
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.adminer.rule=Host(`adminer.lab.local`)
+      - traefik.http.routers.adminer.rule=Host(\`adminer.${DOMAIN}\`)
       - traefik.http.services.adminer.loadbalancer.server.port=8080
 
     networks:
@@ -777,7 +794,7 @@ services:
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.pgadmin.rule=Host(\`pgadmin.lab.local\`)
+      - traefik.http.routers.pgadmin.rule=Host(\`pgadmin.${DOMAIN}\`)
       - traefik.http.services.pgadmin.loadbalancer.server.port=80
 
     networks:
@@ -864,7 +881,7 @@ services:
     environment:
       SSH_AUTH_SOCK: /run/host-ssh-agent
       AUTHENTICATION_API_KEY: change-me
-      SERVER_URL: http://evolution-api.lab.local
+      SERVER_URL: http://evolution-api.${DOMAIN}
       SERVER_DISABLE_MANAGER: "false"
       NODE_OPTIONS: --dns-result-order=ipv4first
       DATABASE_ENABLED: "true"
@@ -886,12 +903,12 @@ services:
       S3_ENABLED: "false"
 
     volumes:
-      - \${SSH_AUTH_SOCK:-/dev/null}:/run/host-ssh-agent
+      - ${SSH_AGENT_MOUNT}
       - $(yaml_path "$DATA/evolution-api:/evolution/instances")
 
     labels:
       - traefik.enable=true
-      - traefik.http.routers.evolution-api.rule=Host(\`evolution-api.lab.local\`)
+      - traefik.http.routers.evolution-api.rule=Host(\`evolution-api.${DOMAIN}\`)
       - traefik.http.routers.evolution-api.entrypoints=web
       - traefik.http.routers.evolution-api.service=evolution-api
       - traefik.http.services.evolution-api.loadbalancer.server.port=8080
@@ -933,31 +950,15 @@ if [[ ! -d "$BASE" ]]; then
   exit 1
 fi
 
-if ! docker info >/dev/null 2>&1; then
-  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
-  echo "Inicie o systemd e o serviço Docker antes de continuar:" >&2
-  echo "  systemctl is-system-running" >&2
-  echo "  sudo systemctl start docker" >&2
-  echo "Se o WSL não usar systemd, habilite [boot] systemd=true em /etc/wsl.conf e execute 'wsl --shutdown' no PowerShell." >&2
-  exit 1
-fi
+source "$SCRIPT_DIR/platform.sh"
+lab_require_docker || exit 1
 
 if ! docker network inspect infra-network >/dev/null 2>&1; then
   echo "Criando a rede compartilhada infra-network"
   docker network create infra-network >/dev/null
 fi
 
-if [[ -z "${SSH_AUTH_SOCK:-}" && -S "$HOME/.ssh/docker-lab-agent.sock" ]]; then
-  SSH_AUTH_SOCK="$HOME/.ssh/docker-lab-agent.sock"
-  export SSH_AUTH_SOCK
-fi
-
-if [[ -S "${SSH_AUTH_SOCK:-}" ]]; then
-  echo "Agente SSH disponível para os containers de aplicação."
-else
-  echo "Aviso: agente SSH não encontrado; Git por SSH ficará indisponível nos containers." >&2
-  echo "Carregue a chave com ssh-add e inicie os containers novamente." >&2
-fi
+lab_check_ssh_agent
 
 SERVICES=(
 EOF_START
@@ -1025,14 +1026,8 @@ if [[ ! -d "$BASE" ]]; then
   exit 1
 fi
 
-if ! docker info >/dev/null 2>&1; then
-  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
-  echo "Inicie o systemd e o serviço Docker antes de continuar:" >&2
-  echo "  systemctl is-system-running" >&2
-  echo "  sudo systemctl start docker" >&2
-  echo "Se o WSL não usar systemd, habilite [boot] systemd=true em /etc/wsl.conf e execute 'wsl --shutdown' no PowerShell." >&2
-  exit 1
-fi
+source "$SCRIPT_DIR/platform.sh"
+lab_require_docker || exit 1
 
 SERVICES=(
 EOF_STOP
@@ -1069,45 +1064,13 @@ chmod +x "$BASE/scripts/stop-all.sh"
 # HOSTS
 #############################################
 
-cat > "$BASE/hosts-lab.txt" <<'EOF_HOSTS'
-127.0.0.1 traefik.lab.local
-EOF_HOSTS
+printf '127.0.0.1 traefik.%s\n' "$DOMAIN" > "$BASE/hosts-lab.txt"
 
-if should_create_service "wordpress"; then
-  printf '127.0.0.1 wordpress.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "mautic"; then
-  printf '127.0.0.1 mautic.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "n8n"; then
-  printf '127.0.0.1 n8n.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "minio"; then
-  printf '127.0.0.1 minio.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "portainer"; then
-  printf '127.0.0.1 portainer.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "adminer"; then
-  printf '127.0.0.1 adminer.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "pgadmin"; then
-  printf '127.0.0.1 pgadmin.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "mailhog"; then
-  printf '127.0.0.1 mailhog.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
-
-if should_create_service "evolution-api"; then
-  printf '127.0.0.1 evolution-api.lab.local\n' >> "$BASE/hosts-lab.txt"
-fi
+for service in wordpress mautic n8n minio portainer adminer pgadmin mailhog evolution-api; do
+  if should_create_service "$service"; then
+    printf '127.0.0.1 %s.%s\n' "$service" "$DOMAIN" >> "$BASE/hosts-lab.txt"
+  fi
+done
 
 cat > "$BASE/scripts/update-hosts.sh" <<'EOF_HOSTS_UPDATE'
 #!/usr/bin/env bash
@@ -1118,6 +1081,9 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 BASE="$(cd -- "$SCRIPT_DIR/.." && pwd -P)"
 HOSTS_FILE="$BASE/hosts-lab.txt"
 MODE="both"
+
+source "$SCRIPT_DIR/platform.sh"
+PLATFORM="$(lab_platform)"
 TEMP_FILE=""
 
 cleanup() {
@@ -1129,12 +1095,14 @@ cleanup() {
 trap cleanup EXIT
 
 usage() {
-  echo "Uso: $0 [--wsl-only | --windows-only]"
+  echo "Uso: $0 [--local-only | --windows-only]"
+  echo "  --local-only    atualiza somente /etc/hosts (macOS, Linux ou WSL); --wsl-only é aceito como alias"
+  echo "  --windows-only  atualiza somente o hosts do Windows (a partir do WSL)"
 }
 
 while (($#)); do
   case "$1" in
-    --wsl-only) MODE="wsl"; shift ;;
+    --local-only|--wsl-only) MODE="local"; shift ;;
     --windows-only) MODE="windows"; shift ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Erro: opção desconhecida: $1" >&2; usage >&2; exit 2 ;;
@@ -1146,7 +1114,7 @@ if [[ ! -s "$HOSTS_FILE" ]]; then
   exit 1
 fi
 
-update_wsl_hosts() {
+update_local_hosts() {
   TEMP_FILE="$(mktemp)"
 
   if ! awk '
@@ -1180,12 +1148,18 @@ update_wsl_hosts() {
     return 1
   fi
 
-  if ! sudo install -o root -g root -m 644 "$TEMP_FILE" /etc/hosts; then
+  # O grupo do root é "wheel" no macOS e "root" no Linux.
+  if ! sudo install -o root -g "$(id -gn root)" -m 644 "$TEMP_FILE" /etc/hosts; then
     cleanup
     return 1
   fi
   cleanup
-  echo "Hosts do WSL atualizados."
+
+  if [[ "$PLATFORM" == "macos" ]]; then
+    sudo dscacheutil -flushcache
+    sudo killall -HUP mDNSResponder
+  fi
+  echo "Hosts locais (/etc/hosts) atualizados."
 }
 
 update_windows_hosts() {
@@ -1212,10 +1186,12 @@ update_windows_hosts() {
 
 case "$MODE" in
   both)
-    update_wsl_hosts
-    update_windows_hosts
+    update_local_hosts
+    if [[ "$PLATFORM" == "wsl" || "$PLATFORM" == "gitbash" ]]; then
+      update_windows_hosts
+    fi
     ;;
-  wsl) update_wsl_hosts ;;
+  local) update_local_hosts ;;
   windows) update_windows_hosts ;;
 esac
 EOF_HOSTS_UPDATE
@@ -1296,7 +1272,11 @@ EOF_WINDOWS_HOSTS
 
 printf "\nInfraestrutura criada com sucesso.\n"
 printf "\nConfigurações: %s\nDados persistentes: %s\nBackups: %s\n" "$BASE" "$DATA" "$BACKUPS"
-printf "\nPara atualizar os hosts do WSL e do Windows, execute:\n"
+if [[ "$(lab_platform)" == "wsl" ]]; then
+  printf "\nPara atualizar os hosts do WSL e do Windows, execute:\n"
+else
+  printf "\nPara atualizar o arquivo de hosts, execute:\n"
+fi
 printf "%s/scripts/update-hosts.sh\n" "$BASE"
 printf "\nExecute:\n"
 printf "%s/scripts/start-all.sh\n" "$BASE"

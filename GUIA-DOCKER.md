@@ -1,7 +1,8 @@
 # Guia de administração do Docker Lab
 
-Este guia considera que os comandos serão executados no WSL ou em um terminal
-Linux e que as configurações do laboratório estão em `~/docker-shared`.
+Este guia considera que os comandos serão executados no Terminal do macOS, no
+WSL ou em um terminal Linux e que as configurações do laboratório estão em
+`~/docker-shared`.
 
 ```bash
 cd ~/docker-shared
@@ -12,7 +13,8 @@ cd ~/docker-shared
 > executar comandos de banco de dados caso elas tenham sido alteradas.
 
 > Este laboratório usa o Docker Engine selecionado pelo comando `docker`.
-> No WSL com Engine nativo, confirme que o `systemd` está habilitado em
+> No macOS, o Docker Desktop precisa estar aberto com o status *Engine
+> running*. No WSL com Engine nativo, confirme que o `systemd` está habilitado em
 > `/etc/wsl.conf` e que `sudo systemctl start docker` funciona. O Docker
 > Desktop não compartilha automaticamente as imagens desse Engine.
 
@@ -123,18 +125,19 @@ aplicação depende de a instalação inicial ter sido concluída.
 As senhas de banco são valores de desenvolvimento e devem ser substituídas
 antes de qualquer uso fora do computador local.
 
-Para atualizar os domínios `*.lab.local` no WSL e no Windows, execute o
-sincronizador gerado. Ele atualiza apenas o bloco gerenciado do Docker Lab,
-pede `sudo` para o WSL e solicita elevação do UAC para o Windows:
+Para atualizar os domínios `*.lab.test`, execute o sincronizador gerado. Ele
+atualiza apenas o bloco gerenciado do Docker Lab no `/etc/hosts` com `sudo`
+(no macOS também limpa o cache de DNS) e, quando executado no WSL, solicita
+elevação do UAC para atualizar também o arquivo do Windows:
 
 ```bash
 ~/docker-shared/scripts/update-hosts.sh
 ```
 
-Também é possível atualizar apenas um dos arquivos:
+No WSL, também é possível atualizar apenas um dos arquivos:
 
 ```bash
-~/docker-shared/scripts/update-hosts.sh --wsl-only
+~/docker-shared/scripts/update-hosts.sh --local-only
 ~/docker-shared/scripts/update-hosts.sh --windows-only
 ```
 
@@ -301,7 +304,7 @@ docker exec traefik traefik version
 docker inspect traefik
 ```
 
-Painel: <http://traefik.lab.local>
+Painel: <http://traefik.lab.test>
 
 ### WordPress
 
@@ -372,7 +375,7 @@ Os arquivos persistentes também estão disponíveis no host:
 cd ~/lab-data/wordpress/files
 ```
 
-Site: <http://wordpress.lab.local>
+Site: <http://wordpress.lab.test>
 
 No momento da verificação, o WordPress consegue abrir uma conexão MySQL, mas
 `wordpress` ainda não tem tabelas e a página mostra erro de banco. Não há
@@ -380,7 +383,7 @@ usuário/senha de administrador do site para informar. Depois de restaurar o
 banco ou concluir uma instalação nova, use `dev@lab.local` como email de
 administrador.
 
-O serviço registra `wordpress.lab.local` como alias na rede Docker
+O serviço registra `wordpress.lab.test` como alias na rede Docker
 `infra-network`. Portanto, essa mesma URL pode ser usada nas credenciais do
 n8n e em integrações executadas por outros containers do laboratório.
 
@@ -448,7 +451,7 @@ As variáveis de conexão esperadas pela imagem incluem `MAUTIC_DB_PORT` e
 O laboratório fixa a imagem em `mautic/mautic:7.1.2-apache` para evitar
 alterações e regressões inesperadas da tag flutuante `latest`.
 
-Aplicação: <http://mautic.lab.local>
+Aplicação: <http://mautic.lab.test>
 
 ### Banco do Mautic — MariaDB
 
@@ -484,7 +487,7 @@ do container como `/data/arquivos`. Nos nós **Read/Write Files from Disk**,
 O Compose define `N8N_RESTRICT_FILE_ACCESS_TO=/data/arquivos`, restringindo os
 nós de arquivo a esse diretório.
 
-Aplicação: <http://n8n.lab.local>
+Aplicação: <http://n8n.lab.test>
 
 O n8n está usando SQLite, restaurado da instalação anterior. A conta existente
 é `admin@lab.local`; a senha não vem do Compose e deve ser a senha já usada na
@@ -551,7 +554,7 @@ docker logs -f --tail=200 minio
 docker inspect minio
 ```
 
-Console: <http://minio.lab.local>
+Console: <http://minio.lab.test>
 
 O Compose ainda referencia `minio/minio`, cuja imagem não está disponível no
 Docker Hub. O projeto original foi descontinuado; a opção oficial atual é
@@ -574,7 +577,7 @@ docker logs -f --tail=200 portainer
 docker inspect portainer
 ```
 
-Interface: <http://portainer.lab.local>
+Interface: <http://portainer.lab.test>
 
 Na validação, o Portainer informou `Administrator initialization timeout`.
 Para reabrir o cadastro, reinicie o serviço e crie o administrador pela
@@ -591,7 +594,7 @@ docker logs -f --tail=200 adminer
 docker inspect adminer
 ```
 
-Interface: <http://adminer.lab.local>
+Interface: <http://adminer.lab.test>
 
 Use como servidor o nome do container do banco, como `wordpress-db`,
 `mautic-db`, `n8n-db` ou `evolution-db`.
@@ -603,7 +606,7 @@ docker logs -f --tail=200 pgadmin
 docker inspect pgadmin
 ```
 
-Interface: <http://pgadmin.lab.local>
+Interface: <http://pgadmin.lab.test>
 
 Ao cadastrar um servidor PostgreSQL, use `n8n-db` ou `evolution-db` como host,
 conforme o banco desejado.
@@ -615,7 +618,11 @@ docker logs -f --tail=200 mailhog
 docker inspect mailhog
 ```
 
-Interface: <http://mailhog.lab.local>
+Interface: <http://mailhog.lab.test>
+
+O container mantém o nome `mailhog`, mas usa a imagem `axllent/mailpit`,
+substituta mantida do MailHog e disponível para Intel e Apple Silicon. A
+interface muda de visual; SMTP e portas continuam os mesmos.
 
 O servidor SMTP fica disponível para os outros containers como `mailhog:1025`.
 No host, as portas são `1026` (SMTP) e `8026` (interface web), para evitar
@@ -666,7 +673,7 @@ O laboratório utiliza `evoapicloud/evolution-api:v2.3.7` e força a resolução
 DNS IPv4 com `NODE_OPTIONS=--dns-result-order=ipv4first`, evitando loops de
 conexão do Baileys observados em versões antigas no Docker/WSL.
 
-Aplicação: <http://evolution-api.lab.local>
+Aplicação: <http://evolution-api.lab.test>
 
 Depois de qualquer alteração no Compose:
 

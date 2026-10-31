@@ -13,31 +13,15 @@ elif [[ $# -gt 0 ]]; then
   exit 2
 fi
 
-if ! docker info >/dev/null 2>&1; then
-  echo "Erro: o Docker Engine não está acessível neste WSL." >&2
-  echo "Inicie o systemd e o serviço Docker antes de continuar:" >&2
-  echo "  systemctl is-system-running" >&2
-  echo "  sudo systemctl start docker" >&2
-  echo "Se o WSL não usar systemd, habilite [boot] systemd=true em /etc/wsl.conf e execute 'wsl --shutdown' no PowerShell." >&2
-  exit 1
-fi
+source "$SCRIPT_DIR/../lib/platform.sh"
+lab_require_docker || exit 1
 
 if ! docker network inspect infra-network >/dev/null 2>&1; then
   echo "Criando a rede compartilhada infra-network"
   docker network create infra-network >/dev/null
 fi
 
-if [[ -z "${SSH_AUTH_SOCK:-}" && -S "$HOME/.ssh/docker-lab-agent.sock" ]]; then
-  SSH_AUTH_SOCK="$HOME/.ssh/docker-lab-agent.sock"
-  export SSH_AUTH_SOCK
-fi
-
-if [[ -S "${SSH_AUTH_SOCK:-}" ]]; then
-  echo "Agente SSH disponível para os containers de aplicação."
-else
-  echo "Aviso: agente SSH não encontrado; Git por SSH ficará indisponível nos containers." >&2
-  echo "Carregue a chave com ssh-add e inicie os containers novamente." >&2
-fi
+lab_check_ssh_agent
 
 SERVICES=(
   traefik
