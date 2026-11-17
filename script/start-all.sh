@@ -27,7 +27,6 @@ SERVICES=(
   traefik
   wordpress-db
   mautic-db
-  n8n-db
   redis
   minio
   wordpress
@@ -39,12 +38,22 @@ SERVICES=(
   mailhog
   evolution-db
   evolution-api
+  ollama
+  qdrant
+  searxng
+  open-webui
 )
 
 FAILED_SERVICES=()
 
 for service in "${SERVICES[@]}"
 do
+  if [[ -f "$BASE/$service/EXTERNAL.txt" ]]; then
+    echo "$service roda fora do Docker:"
+    sed 's/^/  /' "$BASE/$service/EXTERNAL.txt"
+    continue
+  fi
+
   if [[ ! -f "$BASE/$service/docker-compose.yml" ]]; then
     echo "Ignorando $service: arquivo docker-compose.yml não encontrado em $BASE/$service"
     continue

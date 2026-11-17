@@ -92,11 +92,10 @@ está ignorando e continua com os demais serviços; falhas em outros serviços
 continuam sendo reportadas normalmente.
 
 Os containers MySQL e MariaDB estão disponíveis, embora seus bancos
-`wordpress` e `mautic` tenham 0 tabelas. Os dois PostgreSQL aceitam conexões;
-`evolution-db` tem 37 tabelas e `n8n-db` tem 0. O container `n8n-db` está
-ativo, mas não é usado pelo n8n desta instalação: o Compose não configura
-`DB_TYPE=postgresdb` e o n8n usa o SQLite restaurado em
-`~/lab-data/n8n/data/.n8n/database.sqlite`.
+`wordpress` e `mautic` tenham 0 tabelas. O PostgreSQL `evolution-db` tem 37
+tabelas. O n8n não tem banco separado: usa o SQLite restaurado em
+`~/lab-data/n8n/data/.n8n/database.sqlite`. O antigo `n8n-db` (PostgreSQL
+vazio, que nenhum serviço usava) foi removido do lab.
 
 ## Usuários e senhas padrão
 
@@ -112,7 +111,6 @@ aplicação depende de a instalação inicial ter sido concluída.
 | Mautic | — | — | Ainda na instalação inicial; crie o primeiro usuário no assistente. Use `dev@lab.local` como email. |
 | MariaDB do Mautic | `mautic` | `mautic123` | Administrador: `root` / `root123`. |
 | n8n | `admin@lab.local` | Senha existente, não definida pelo Compose | Conta restaurada do banco antigo; use a senha já cadastrada. |
-| PostgreSQL `n8n-db` | `n8n` | `n8n123` | Credencial definida no Compose, mas este banco não é usado pelo n8n atual. |
 | Redis | — | — | Sem autenticação configurada. |
 | MinIO | `admin` | `admin123` | Valores ainda definidos no Compose; serviço desativado na inicialização até a escolha de uma imagem disponível. |
 | Portainer | — | — | A inicialização do administrador expirou; não há senha padrão. Reinicie o container e conclua a criação do administrador em até 5 minutos. |
@@ -234,7 +232,7 @@ que já está armazenada localmente.
 > entender o impacto, pois essa opção remove volumes nomeados.
 
 Os bancos usam os volumes Docker nomeados `wordpress-db-data`,
-`mautic-db-data`, `n8n-db-data` e `evolution-db-data`. Isso evita problemas de
+`mautic-db-data` e `evolution-db-data`. Isso evita problemas de
 permissão dos bancos em diretórios Windows montados no WSL.
 O pgAdmin também usa o volume nomeado `pgadmin-data` pelo mesmo motivo.
 
@@ -278,7 +276,6 @@ docker exec -it wordpress-db sh
 docker exec -it mautic sh
 docker exec -it mautic-db sh
 docker exec -it n8n sh
-docker exec -it n8n-db sh
 docker exec -it redis sh
 docker exec -it minio sh
 docker exec -it portainer sh
@@ -517,24 +514,6 @@ PY
 install -m 600 ~/lab-data/n8n/data/.n8n/config "${backup%.sqlite}-config.json"
 ```
 
-O serviço `n8n-db` (PostgreSQL) continua incluído e ativo, mas não é o banco
-usado pelo n8n atual. Ele está vazio. Um dump desse PostgreSQL não contém os
-workflows nem as credenciais da aplicação.
-
-### PostgreSQL `n8n-db` (não usado pelo n8n atual)
-
-```bash
-docker exec -it n8n-db psql -U n8n -d n8n
-docker exec n8n-db pg_isready -U n8n -d n8n
-```
-
-Backup e restauração:
-
-```bash
-docker exec n8n-db pg_dump -U n8n -d n8n -Fc > n8n-backup.dump
-docker exec -i n8n-db pg_restore -U n8n -d n8n --clean --if-exists < n8n-backup.dump
-```
-
 ### Redis
 
 ```bash
@@ -597,7 +576,7 @@ docker inspect adminer
 Interface: <http://adminer.lab.test>
 
 Use como servidor o nome do container do banco, como `wordpress-db`,
-`mautic-db`, `n8n-db` ou `evolution-db`.
+`mautic-db` ou `evolution-db`.
 
 ### pgAdmin
 
@@ -608,8 +587,7 @@ docker inspect pgadmin
 
 Interface: <http://pgadmin.lab.test>
 
-Ao cadastrar um servidor PostgreSQL, use `n8n-db` ou `evolution-db` como host,
-conforme o banco desejado.
+Ao cadastrar um servidor PostgreSQL, use `evolution-db` como host.
 
 ### MailHog
 

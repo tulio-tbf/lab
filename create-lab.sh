@@ -7,10 +7,19 @@ BASE="${LAB_BASE:-$HOME/docker-shared}"
 DATA="${LAB_DATA:-$HOME/lab-data}"
 BACKUPS="${LAB_BACKUPS:-$HOME/backups}"
 DOMAIN="${LAB_DOMAIN:-lab.test}"
+OLLAMA_MODE="${LAB_OLLAMA_MODE:-auto}"
+OLLAMA_URL="${LAB_OLLAMA_URL:-}"
+CHECK_HARDWARE_ONLY=0
+SERVICES_ARG=""
 NETWORK="infra-network"
 
 # shellcheck source=lib/platform.sh
 source "$SCRIPT_DIR/lib/platform.sh"
+# shellcheck source=lib/hardware.sh
+source "$SCRIPT_DIR/lib/hardware.sh"
+# shellcheck source=lib/services.sh
+source "$SCRIPT_DIR/lib/services.sh"
+ALL_SERVICES=("${LAB_ALL_SERVICES[@]}")
 
 usage() {
   cat <<'EOF'
@@ -20,10 +29,19 @@ Uso: ./create-lab.sh [opções]
   -d, --data DIRETÓRIO   Diretório dos dados persistentes (padrão: ~/lab-data)
   -o, --backups DIRETÓRIO Diretório dos backups (padrão: ~/backups)
   -D, --domain DOMÍNIO   Domínio local dos serviços (padrão: lab.test)
+      --ollama-mode MODO Onde roda o Ollama: auto (padrão), native, docker,
+                         docker-gpu ou remote
+      --ollama-url URL   Endereço do Ollama no modo remote, por exemplo
+                         http://192.168.0.20:11434
+      --check-hardware   Apenas exibe o diagnóstico de hardware e sai
+      --services LISTA   Serviços a criar, sem menu (ex.: "n8n qdrant" ou "IA")
   -h, --help             Exibe esta ajuda
 
-As opções também podem ser definidas por LAB_BASE, LAB_DATA, LAB_BACKUPS e
-LAB_DOMAIN.
+No modo auto, o script verifica CPU, RAM, GPU e a memória do Docker e escolhe
+se o Ollama roda em container ou nativo no sistema.
+
+As opções também podem ser definidas por LAB_BASE, LAB_DATA, LAB_BACKUPS,
+LAB_DOMAIN, LAB_OLLAMA_MODE, LAB_OLLAMA_URL e LAB_LLM_MODEL (modelo padrão).
 Os argumentos de linha de comando têm precedência sobre as variáveis.
 EOF
 }
@@ -48,6 +66,25 @@ while (($#)); do
     -D|--domain)
       [[ $# -ge 2 ]] || { echo "Erro: $1 requer um domínio." >&2; exit 2; }
       DOMAIN="$2"
+      shift 2
+      ;;
+    --ollama-mode)
+      [[ $# -ge 2 ]] || { echo "Erro: $1 requer um modo." >&2; exit 2; }
+      OLLAMA_MODE="$2"
+      shift 2
+      ;;
+    --ollama-url)
+      [[ $# -ge 2 ]] || { echo "Erro: $1 requer uma URL." >&2; exit 2; }
+      OLLAMA_URL="$2"
+      shift 2
+      ;;
+    --check-hardware)
+      CHECK_HARDWARE_ONLY=1
+      shift
+      ;;
+    --services)
+      [[ $# -ge 2 ]] || { echo "Erro: $1 requer uma lista de serviços." >&2; exit 2; }
+      SERVICES_ARG="$2"
       shift 2
       ;;
     -h|--help)
@@ -94,6 +131,37 @@ if [[ "$DOMAIN" == *.local ]]; then
   echo "Aviso: no macOS, domínios .local passam pelo mDNS (Bonjour) e podem demorar segundos para resolver." >&2
 fi
 DOMAIN_REGEX="${DOMAIN//./\\.}"
+
+case "$OLLAMA_MODE" in
+  auto|native|docker|docker-gpu) ;;
+  remote)
+    if [[ ! "$OLLAMA_URL" =~ ^https?://[^[:space:]]+$ ]]; then
+      echo "Erro: o modo remote requer --ollama-url http://HOST:11434" >&2
+      exit 2
+    fi
+    OLLAMA_URL="${OLLAMA_URL%/}"
+    ;;
+  *)
+    echo "Erro: modo do Ollama inválido: $OLLAMA_MODE (use auto, native, docker, docker-gpu ou remote)" >&2
+    exit 2
+    ;;
+esac
+
+services_memory_mb() {
+  local total=0
+  local service
+  for service in "$@"; do
+    total=$((total + $(lab_service_memory_mb "$service")))
+  done
+  echo "$total"
+}
+
+if ((CHECK_HARDWARE_ONLY)); then
+  lab_hw_detect "$DATA"
+  lab_hw_report "$OLLAMA_MODE" "$(services_memory_mb "${ALL_SERVICES[@]}")" 1
+  echo "Estimativa considerando todos os serviços do lab."
+  exit 0
+fi
 SSH_AGENT_MOUNT="$(lab_ssh_agent_mount_source):/run/host-ssh-agent"
 
 yaml_path() {
@@ -101,84 +169,95 @@ yaml_path() {
   printf "'%s'" "${1//\'/\'\'}"
 }
 
-printf "\nEscolha o que deseja criar:\n"
-printf "  A = criar todos os serviços\n"
-printf "  ou informe os serviços desejados separados por espaço\n"
-printf "Serviços disponíveis: traefik wordpress wordpress-db mautic mautic-db n8n n8n-db redis minio portainer adminer pgadmin mailhog evolution-db evolution-api\n"
-read -r -p "Opção: " answer
-
-if [[ -z "$answer" ]]; then
-  answer="A"
-fi
-
-answer=$(echo "$answer" | tr '[:upper:]' '[:lower:]')
-
-if [[ "$answer" == "a" || "$answer" == "all" ]]; then
-  SELECTED_SERVICES=(traefik wordpress wordpress-db mautic mautic-db n8n n8n-db redis minio portainer adminer pgadmin mailhog evolution-db evolution-api)
+LAB_CHOICES=("${ALL_SERVICES[@]}")
+if [[ -n "$SERVICES_ARG" ]]; then
+  # Sem menu: só nomes e os atalhos A e IA.
+  LAB_MENU=()
+  _lab_parse_answer "$SERVICES_ARG" || exit 2
 else
-  SELECTED_SERVICES=()
-  for token in $answer; do
-    case "$token" in
-      traefik|wordpress|wordpress-db|mautic|mautic-db|n8n|n8n-db|redis|minio|portainer|adminer|pgadmin|mailhog|evolution-db|evolution-api)
-        SELECTED_SERVICES+=("$token")
-        ;;
-      *)
-        echo "Serviço inválido: $token"
-        exit 1
-        ;;
-    esac
-  done
+  lab_choose_services "criar" || exit 1
 fi
 
-if ((${#SELECTED_SERVICES[@]} == 0)); then
-  echo "Nenhum serviço informado."
-  exit 1
-fi
-
-# Função em vez de array associativo para funcionar no Bash 3.2 do macOS.
-service_dependencies() {
-  case "$1" in
-    wordpress) echo "wordpress-db traefik" ;;
-    mautic) echo "mautic-db traefik" ;;
-    n8n) echo "n8n-db traefik" ;;
-    minio|portainer|adminer|pgadmin|mailhog) echo "traefik" ;;
-    evolution-api) echo "evolution-db redis traefik" ;;
-  esac
-}
-
-service_requires() {
-  local service="$1"
-  local target="$2"
-  local dep
-
-  if [[ "$service" == "$target" ]]; then
-    return 0
-  fi
-
-  for dep in $(service_dependencies "$service"); do
-    if [[ "$dep" == "$target" ]] || service_requires "$dep" "$target"; then
-      return 0
-    fi
-  done
-
-  return 1
-}
-
+# Verdadeiro se o serviço foi escolhido ou é dependência de um escolhido.
 should_create_service() {
-  local service="$1"
-  local selected
-
-  for selected in "${SELECTED_SERVICES[@]}"; do
-    if service_requires "$selected" "$service"; then
-      return 0
-    fi
-  done
-
-  return 1
+  lab_selection_requires "$1"
 }
+
+#############################################
+# DIAGNÓSTICO DE HARDWARE
+#############################################
+
+CREATED_SERVICES=()
+for service in "${ALL_SERVICES[@]}"; do
+  if should_create_service "$service"; then
+    CREATED_SERVICES+=("$service")
+  fi
+done
+
+printf "\nSerão criados (com dependências): %s\n" "$(printf '%s\n' "${CREATED_SERVICES[@]}" | LC_ALL=C sort | tr '\n' ' ')"
+
+WANTS_OLLAMA=0
+should_create_service "ollama" && WANTS_OLLAMA=1
+
+# Ao recriar ou adicionar serviços num lab existente, mantém o modo do Ollama
+# escolhido antes (por exemplo, remote), em vez de recalcular.
+if ((WANTS_OLLAMA)) && [[ "$OLLAMA_MODE" == "auto" && -f "$BASE/ollama/ollama.env" ]]; then
+  PREVIOUS_OLLAMA_MODE="$(sed -n 's/^OLLAMA_MODE=//p' "$BASE/ollama/ollama.env")"
+  PREVIOUS_OLLAMA_URL="$(sed -n 's/^OLLAMA_BASE_URL=//p' "$BASE/ollama/ollama.env")"
+  case "$PREVIOUS_OLLAMA_MODE" in
+    native|docker|docker-gpu|remote)
+      OLLAMA_MODE="$PREVIOUS_OLLAMA_MODE"
+      [[ "$OLLAMA_MODE" == "remote" ]] && OLLAMA_URL="$PREVIOUS_OLLAMA_URL"
+      echo "Mantendo o Ollama no modo $OLLAMA_MODE já configurado (use --ollama-mode para mudar)."
+      ;;
+  esac
+  if [[ -z "${LAB_LLM_MODEL:-}" ]]; then
+    LAB_LLM_MODEL="$(sed -n 's/^LLM_MODEL=//p' "$BASE/ollama/ollama.env")"
+    [[ -n "$LAB_LLM_MODEL" ]] || unset LAB_LLM_MODEL
+  fi
+fi
+
+lab_hw_detect "$DATA"
+lab_hw_report "$OLLAMA_MODE" "$(services_memory_mb "${CREATED_SERVICES[@]}")" "$WANTS_OLLAMA"
+
+if ((WANTS_OLLAMA)); then
+  OLLAMA_MODE="$HW_OLLAMA_MODE"
+  LLM_MODEL="$HW_LLM_MODEL"
+  if [[ "$OLLAMA_MODE" == "docker-gpu" ]] && ((!HW_DOCKER_GPU)); then
+    echo "Alerta: --ollama-mode docker-gpu escolhido, mas o Docker não tem acesso a uma GPU NVIDIA." >&2
+    HW_WARNINGS=$((HW_WARNINGS + 1))
+  fi
+  case "$OLLAMA_MODE" in
+    docker|docker-gpu) OLLAMA_URL="http://ollama:11434" ;;
+    native) OLLAMA_URL="http://host.docker.internal:11434" ;;
+  esac
+fi
+
+if ((HW_WARNINGS)); then
+  read -r -p "Há $HW_WARNINGS alerta(s) acima. Continuar mesmo assim? [s/N] " confirm || confirm=""
+  case "$confirm" in
+    s|S|sim|SIM|y|Y) ;;
+    *) echo "Cancelado."; exit 1 ;;
+  esac
+fi
 
 mkdir -p "$BASE/scripts" "$BASE/networks" "$BASE/certificates" "$BASE/templates"
 cp -- "$SCRIPT_DIR/lib/platform.sh" "$BASE/scripts/platform.sh"
+cp -- "$SCRIPT_DIR/lib/services.sh" "$BASE/scripts/services.sh"
+for helper in start-custom.sh update-lab.sh; do
+  cp -- "$SCRIPT_DIR/script/$helper" "$BASE/scripts/$helper"
+  chmod +x "$BASE/scripts/$helper"
+done
+
+# Caminhos usados pelos scripts gerados (update-lab.sh precisa deles para
+# backups e para chamar este instalador ao adicionar serviços).
+cat > "$BASE/lab.env" <<EOF_LAB_ENV
+# Gerado por create-lab.sh.
+LAB_DATA=$(printf '%q' "$DATA")
+LAB_BACKUPS=$(printf '%q' "$BACKUPS")
+LAB_DOMAIN=$(printf '%q' "$DOMAIN")
+LAB_REPO=$(printf '%q' "$SCRIPT_DIR")
+EOF_LAB_ENV
 mkdir -p "$BACKUPS/databases" "$BACKUPS/volumes" "$BACKUPS/projects"
 
 if should_create_service "traefik"; then
@@ -199,8 +278,8 @@ if should_create_service "mautic" || should_create_service "mautic-db"; then
   mkdir -p "$BASE/mautic" "$BASE/mautic-db"
 fi
 
-if should_create_service "n8n" || should_create_service "n8n-db"; then
-  mkdir -p "$BASE/n8n" "$BASE/n8n-db" "$DATA/n8n/data" "$DATA/n8n/arquivos"
+if should_create_service "n8n"; then
+  mkdir -p "$BASE/n8n" "$DATA/n8n/data" "$DATA/n8n/arquivos"
 fi
 
 if should_create_service "redis"; then
@@ -251,6 +330,25 @@ fi
 
 if should_create_service "evolution-api"; then
   mkdir -p "$DATA/evolution-api"
+fi
+
+if should_create_service "ollama"; then
+  mkdir -p "$BASE/ollama"
+  if [[ "$OLLAMA_MODE" == docker* ]]; then
+    mkdir -p "$DATA/ollama"
+  fi
+fi
+
+if should_create_service "qdrant"; then
+  mkdir -p "$BASE/qdrant" "$DATA/qdrant"
+fi
+
+if should_create_service "open-webui"; then
+  mkdir -p "$BASE/open-webui" "$DATA/open-webui"
+fi
+
+if should_create_service "searxng"; then
+  mkdir -p "$BASE/searxng/config"
 fi
 
 lab_require_docker || exit 1
@@ -499,42 +597,6 @@ EOF_MAUTIC
 fi
 
 #############################################
-# N8N DB
-#############################################
-
-if should_create_service "n8n-db"; then
-cat > "$BASE/n8n-db/docker-compose.yml" <<EOF_N8N_DB
-services:
-  n8n-db:
-    image: postgres:17
-
-    container_name: n8n-db
-
-    restart: unless-stopped
-
-    environment:
-      POSTGRES_DB: n8n
-      POSTGRES_USER: n8n
-      POSTGRES_PASSWORD: n8n123
-
-    volumes:
-      - n8n-db-data:/var/lib/postgresql/data
-
-    networks:
-      - infra
-
-networks:
-  infra:
-    external: true
-    name: infra-network
-
-volumes:
-  n8n-db-data:
-    name: n8n-db-data
-EOF_N8N_DB
-fi
-
-#############################################
 # N8N
 #############################################
 
@@ -555,6 +617,11 @@ services:
       N8N_SECURE_COOKIE: "false"
       WEBHOOK_URL: http://n8n.${DOMAIN}/
       N8N_RESTRICT_FILE_ACCESS_TO: /data/arquivos
+
+    # Permite acessar serviços do hospedeiro, como o Ollama nativo, em
+    # http://host.docker.internal:11434 também no Docker Engine do Linux/WSL.
+    extra_hosts:
+      - host.docker.internal:host-gateway
 
     volumes:
       - ${SSH_AGENT_MOUNT}
@@ -924,10 +991,295 @@ EOF_EVOLUTION_API
 fi
 
 #############################################
+# OLLAMA
+#############################################
+
+if should_create_service "ollama"; then
+  # Remove o que sobrou de um modo anterior antes de gerar o atual.
+  rm -f -- "$BASE/ollama/docker-compose.yml" "$BASE/ollama/EXTERNAL.txt"
+
+  case "$OLLAMA_MODE" in
+    docker|docker-gpu)
+      OLLAMA_GPU_BLOCK=""
+      if [[ "$OLLAMA_MODE" == "docker-gpu" ]]; then
+        OLLAMA_GPU_BLOCK="
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+"
+      fi
+cat > "$BASE/ollama/docker-compose.yml" <<EOF_OLLAMA
+services:
+  ollama:
+    image: ollama/ollama:latest
+
+    container_name: ollama
+
+    restart: unless-stopped
+
+    # Sem Traefik nem porta publicada: só os containers da infra-network
+    # acessam a API, em http://ollama:11434.
+    environment:
+      OLLAMA_KEEP_ALIVE: 10m
+      # Modelo de chat + modelo de embedding carregados ao mesmo tempo.
+      OLLAMA_MAX_LOADED_MODELS: "2"
+      OLLAMA_NUM_PARALLEL: "1"
+
+    volumes:
+      - $(yaml_path "$DATA/ollama:/root/.ollama")
+${OLLAMA_GPU_BLOCK}
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
+    name: infra-network
+EOF_OLLAMA
+      ;;
+    native)
+      {
+        echo "Ollama nativo, acessado pelos containers em $OLLAMA_URL."
+        case "$(lab_platform)" in
+          macos)
+            echo "Instale com 'brew install ollama' e inicie com 'brew services start ollama'"
+            echo "(ou use o app de https://ollama.com/download)."
+            ;;
+          wsl)
+            if ((HW_DOCKER_DESKTOP)); then
+              echo "Instale o Ollama para Windows (https://ollama.com/download); o Docker Desktop"
+              echo "alcança o Windows por host.docker.internal."
+            else
+              echo "Instale no WSL: curl -fsSL https://ollama.com/install.sh | sh"
+              echo "Depois libere o acesso dos containers: sudo systemctl edit ollama"
+              echo "  [Service]"
+              echo "  Environment=\"OLLAMA_HOST=0.0.0.0:11434\""
+              echo "e reinicie: sudo systemctl restart ollama"
+            fi
+            ;;
+          gitbash)
+            echo "Instale o Ollama para Windows (https://ollama.com/download)."
+            ;;
+          *)
+            echo "Instale com: curl -fsSL https://ollama.com/install.sh | sh"
+            echo "Libere o acesso dos containers com OLLAMA_HOST=0.0.0.0:11434 (sudo systemctl edit ollama)"
+            echo "e bloqueie a porta 11434 no firewall para a rede externa."
+            ;;
+        esac
+        echo "Baixe os modelos com: $BASE/ollama/pull-models.sh"
+      } > "$BASE/ollama/EXTERNAL.txt"
+      ;;
+    remote)
+      {
+        echo "Ollama remoto em $OLLAMA_URL."
+        echo "Na outra máquina, o Ollama precisa escutar na rede (OLLAMA_HOST=0.0.0.0:11434)"
+        echo "e a porta 11434 deve estar liberada só para a rede local."
+      } > "$BASE/ollama/EXTERNAL.txt"
+      ;;
+  esac
+
+  cat > "$BASE/ollama/ollama.env" <<EOF_OLLAMA_ENV
+# Gerado por create-lab.sh. Use OLLAMA_BASE_URL nas credenciais do n8n,
+# no Open WebUI e em outros containers da infra-network.
+OLLAMA_MODE=$OLLAMA_MODE
+OLLAMA_BASE_URL=$OLLAMA_URL
+LLM_MODEL=$LLM_MODEL
+EMBED_MODEL=nomic-embed-text
+EOF_OLLAMA_ENV
+
+  cat > "$BASE/ollama/pull-models.sh" <<'EOF_OLLAMA_PULL'
+#!/usr/bin/env bash
+
+set -Eeuo pipefail
+
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=/dev/null
+source "$SCRIPT_DIR/ollama.env"
+
+if (($#)); then
+  MODELS=("$@")
+else
+  MODELS=("$LLM_MODEL" "$EMBED_MODEL")
+fi
+
+pull() {
+  local model="$1"
+  local api_url
+
+  echo "Baixando $model ($OLLAMA_MODE)..."
+  case "$OLLAMA_MODE" in
+    docker|docker-gpu)
+      docker exec ollama ollama pull "$model"
+      return
+      ;;
+    native)
+      if command -v ollama >/dev/null 2>&1; then
+        ollama pull "$model"
+        return
+      fi
+      if command -v ollama.exe >/dev/null 2>&1; then
+        ollama.exe pull "$model"
+        return
+      fi
+      api_url="http://localhost:11434"
+      ;;
+    remote)
+      api_url="$OLLAMA_BASE_URL"
+      ;;
+  esac
+
+  curl -fsS -X POST "$api_url/api/pull" \
+    -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$model\",\"stream\":false}"
+  echo
+}
+
+for model in "${MODELS[@]}"; do
+  pull "$model"
+done
+EOF_OLLAMA_PULL
+  chmod +x "$BASE/ollama/pull-models.sh"
+fi
+
+#############################################
+# QDRANT
+#############################################
+
+if should_create_service "qdrant"; then
+cat > "$BASE/qdrant/docker-compose.yml" <<EOF_QDRANT
+services:
+  qdrant:
+    image: qdrant/qdrant:latest
+
+    container_name: qdrant
+
+    restart: unless-stopped
+
+    # API REST em http://qdrant:6333 dentro da rede; painel em
+    # http://qdrant.${DOMAIN}/dashboard
+    volumes:
+      - $(yaml_path "$DATA/qdrant:/qdrant/storage")
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.qdrant.rule=Host(\`qdrant.${DOMAIN}\`)
+      - traefik.http.routers.qdrant.entrypoints=web
+      - traefik.http.services.qdrant.loadbalancer.server.port=6333
+
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
+    name: infra-network
+EOF_QDRANT
+fi
+
+#############################################
+# OPEN WEBUI
+#############################################
+
+if should_create_service "open-webui"; then
+cat > "$BASE/open-webui/docker-compose.yml" <<EOF_OPEN_WEBUI
+services:
+  open-webui:
+    image: ghcr.io/open-webui/open-webui:main
+
+    container_name: open-webui
+
+    restart: unless-stopped
+
+    # O primeiro usuário cadastrado vira administrador.
+    environment:
+      OLLAMA_BASE_URL: ${OLLAMA_URL}
+
+    extra_hosts:
+      - host.docker.internal:host-gateway
+
+    volumes:
+      - $(yaml_path "$DATA/open-webui:/app/backend/data")
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.open-webui.rule=Host(\`open-webui.${DOMAIN}\`)
+      - traefik.http.routers.open-webui.entrypoints=web
+      - traefik.http.services.open-webui.loadbalancer.server.port=8080
+
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
+    name: infra-network
+EOF_OPEN_WEBUI
+fi
+
+#############################################
+# SEARXNG
+#############################################
+
+if should_create_service "searxng"; then
+  # Mantém o settings.yml existente para não trocar a chave nem perder ajustes.
+  if [[ ! -f "$BASE/searxng/config/settings.yml" ]]; then
+    SEARXNG_SECRET="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+    cat > "$BASE/searxng/config/settings.yml" <<EOF_SEARXNG_SETTINGS
+use_default_settings: true
+
+server:
+  secret_key: "${SEARXNG_SECRET}"
+  limiter: false
+  image_proxy: false
+
+search:
+  # json é o formato usado pelos agentes (n8n: http://searxng:8080/search?q=...&format=json)
+  formats:
+    - html
+    - json
+EOF_SEARXNG_SETTINGS
+  fi
+
+cat > "$BASE/searxng/docker-compose.yml" <<EOF_SEARXNG
+services:
+  searxng:
+    image: searxng/searxng:latest
+
+    container_name: searxng
+
+    restart: unless-stopped
+
+    environment:
+      SEARXNG_BASE_URL: http://searxng.${DOMAIN}/
+
+    volumes:
+      - $(yaml_path "$BASE/searxng/config:/etc/searxng")
+
+    labels:
+      - traefik.enable=true
+      - traefik.http.routers.searxng.rule=Host(\`searxng.${DOMAIN}\`)
+      - traefik.http.routers.searxng.entrypoints=web
+      - traefik.http.services.searxng.loadbalancer.server.port=8080
+
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
+    name: infra-network
+EOF_SEARXNG
+fi
+
+#############################################
 # START-ALL
 #############################################
 
-START_SERVICES=(traefik wordpress-db mautic-db n8n-db redis wordpress mautic n8n portainer adminer pgadmin mailhog evolution-db evolution-api)
+START_SERVICES=("${LAB_START_ORDER[@]}")
 
 cat > "$BASE/scripts/start-all.sh" <<'EOF_START'
 #!/usr/bin/env bash
@@ -974,6 +1326,14 @@ FAILED_SERVICES=()
 
 for service in "${SERVICES[@]}"
 do
+  # Serviços que rodam fora do Docker (Ollama nativo ou remoto) deixam um
+  # aviso com instruções no lugar do docker-compose.yml.
+  if [[ -f "$BASE/$service/EXTERNAL.txt" ]]; then
+    echo "$service roda fora do Docker:"
+    sed 's/^/  /' "$BASE/$service/EXTERNAL.txt"
+    continue
+  fi
+
   if [[ ! -f "$BASE/$service/docker-compose.yml" ]]; then
     echo "Ignorando $service: arquivo docker-compose.yml não encontrado em $BASE/$service"
     continue
@@ -1064,13 +1424,8 @@ chmod +x "$BASE/scripts/stop-all.sh"
 # HOSTS
 #############################################
 
-printf '127.0.0.1 traefik.%s\n' "$DOMAIN" > "$BASE/hosts-lab.txt"
-
-for service in wordpress mautic n8n minio portainer adminer pgadmin mailhog evolution-api; do
-  if should_create_service "$service"; then
-    printf '127.0.0.1 %s.%s\n' "$service" "$DOMAIN" >> "$BASE/hosts-lab.txt"
-  fi
-done
+# Inclui todos os serviços existentes, não só os desta execução.
+lab_write_hosts "$BASE" "$DOMAIN"
 
 cat > "$BASE/scripts/update-hosts.sh" <<'EOF_HOSTS_UPDATE'
 #!/usr/bin/env bash
@@ -1280,3 +1635,12 @@ fi
 printf "%s/scripts/update-hosts.sh\n" "$BASE"
 printf "\nExecute:\n"
 printf "%s/scripts/start-all.sh\n" "$BASE"
+
+if should_create_service "ollama"; then
+  printf "\nOllama: modo %s, acessado pelos containers em %s\n" "$OLLAMA_MODE" "$OLLAMA_URL"
+  if [[ -f "$BASE/ollama/EXTERNAL.txt" ]]; then
+    sed 's/^/  /' "$BASE/ollama/EXTERNAL.txt"
+  fi
+  printf "Depois de subir o Ollama, baixe os modelos (%s e nomic-embed-text):\n" "$LLM_MODEL"
+  printf "%s/ollama/pull-models.sh\n" "$BASE"
+fi

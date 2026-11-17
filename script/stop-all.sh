@@ -17,7 +17,6 @@ SERVICES=(
   traefik
   wordpress-db
   mautic-db
-  n8n-db
   redis
   minio
   wordpress

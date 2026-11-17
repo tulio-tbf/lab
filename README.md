@@ -82,7 +82,7 @@ daemon e não compartilha automaticamente as imagens do Engine nativo.
 - Traefik
 - WordPress + MySQL
 - Mautic + MariaDB
-- n8n + PostgreSQL
+- n8n (dados em SQLite)
 - Redis
 - MinIO
 - Portainer
@@ -90,6 +90,10 @@ daemon e não compartilha automaticamente as imagens do Engine nativo.
 - pgAdmin
 - Mailhog (servido pela imagem Mailpit, com o mesmo nome e as mesmas portas)
 - Evolution API + PostgreSQL
+- Ollama (LLMs locais; em container ou nativo, conforme o hardware)
+- Qdrant (banco vetorial para RAG e memória de agentes)
+- Open WebUI (interface de chat para testar modelos e prompts)
+- SearXNG (busca na web sem API key, usada como ferramenta pelos agentes)
 
 ## Criar o ambiente
 
@@ -144,6 +148,63 @@ traefik wordpress evolution-api
 
 As dependências necessárias são incluídas automaticamente.
 
+## Serviços de IA
+
+Informe `IA` na seleção para criar `ollama qdrant open-webui searxng` (o
+Traefik entra como dependência). Antes de gerar os arquivos, o script faz um
+diagnóstico de CPU, RAM, GPU, memória do Docker e disco, e então:
+
+- escolhe onde o Ollama roda;
+- recomenda o modelo que cabe na memória livre;
+- informa quanta memória reservar ao Docker e pede confirmação se algo não
+  couber.
+
+Para ver só o diagnóstico, sem criar nada:
+
+```bash
+./create-lab.sh --check-hardware
+```
+
+| Máquina | Modo escolhido | Motivo |
+|---|---|---|
+| Mac (Intel ou Apple Silicon) | `native` | Containers não acessam a GPU no Mac; no Apple Silicon o Ollama nativo usa Metal, e no Intel evita dividir a RAM com a VM do Docker Desktop. |
+| Windows/Linux com GPU NVIDIA visível ao Docker | `docker-gpu` | Container com aceleração. |
+| Windows/Linux com GPU NVIDIA sem NVIDIA Container Toolkit | `native` | O Ollama nativo usa a GPU direto. |
+| Windows/Linux sem GPU | `docker` | Só CPU; no Linux/WSL o container tem desempenho igual ao nativo. |
+
+O modo pode ser forçado com `--ollama-mode native|docker|docker-gpu|remote`.
+O modo `remote` usa o Ollama de outra máquina da rede, por exemplo o PC com
+GPU servindo o Mac:
+
+```bash
+./create-lab.sh --ollama-mode remote --ollama-url http://192.168.0.20:11434
+```
+
+O endereço que os containers devem usar (credencial Ollama do n8n, Open
+WebUI) e os modelos escolhidos ficam em `~/docker-shared/ollama/ollama.env`.
+Depois de subir o lab, baixe os modelos com:
+
+```bash
+~/docker-shared/ollama/pull-models.sh            # modelo recomendado + nomic-embed-text
+~/docker-shared/ollama/pull-models.sh qwen3:8b   # outro modelo
+```
+
+Os modelos indicados são da família Qwen 3, que suporta tool calling (necessário
+para agentes). O padrão pode ser trocado com `LAB_LLM_MODEL`. Sem GPU, prefira
+modelos de até 4B: os maiores funcionam, mas ficam lentos demais para fluxos de
+agente.
+
+Dentro da `infra-network`, os serviços ficam em `http://qdrant:6333` e
+`http://searxng:8080/search?q=TERMO&format=json`.
+
+### Pendrive e disco externo
+
+Pendrive não acelera a IA. O modelo precisa caber na RAM (ou na VRAM): um
+pendrive USB lê a centenas de MB/s, a RAM a dezenas de GB/s, então swap ou
+"ReadyBoost" em pendrive deixa tudo mais lento. Um **SSD externo** serve só
+para guardar modelos e liberar o disco interno: aponte `--data` para ele
+(modo container) ou defina `OLLAMA_MODELS` (Ollama nativo).
+
 ## Iniciar e parar
 
 Os scripts gerados descobrem o diretório base pela sua própria localização:
@@ -153,12 +214,61 @@ Os scripts gerados descobrem o diretório base pela sua própria localização:
 /opt/docker-lab/scripts/stop-all.sh
 ```
 
+Para subir só alguns serviços, use o `start-custom.sh`. Ele lista apenas os
+serviços já criados, marca com `*` os que estão rodando e aceita os mesmos
+formatos de escolha do instalador (`A`, `IA`, nomes, números ou intervalos).
+As dependências sobem junto: escolher `wordpress` também inicia `wordpress-db` e `traefik`.
+
+```bash
+/opt/docker-lab/scripts/start-custom.sh
+```
+
 O diretório também pode ser sobrescrito:
 
 ```bash
 LAB_BASE=/opt/docker-lab ./scripts/start-all.sh
 ./scripts/stop-all.sh --base /opt/docker-lab
 ```
+
+## Manutenção: atualizar, adicionar, remover e limpar
+
+O `update-lab.sh` reúne a manutenção do lab num menu, ou direto pela ação:
+
+```bash
+~/docker-shared/scripts/update-lab.sh             # menu
+~/docker-shared/scripts/update-lab.sh atualizar
+~/docker-shared/scripts/update-lab.sh adicionar
+~/docker-shared/scripts/update-lab.sh remover
+~/docker-shared/scripts/update-lab.sh limpar
+```
+
+- **Atualizar:** faz `pull` das imagens de registro e reconstrói as locais
+  (wordpress, mautic, evolution-api) com a base mais recente. Só recria os
+  containers que estavam rodando e cuja imagem mudou. Escolher uma aplicação
+  inclui o banco dela.
+- **Adicionar:** lista só os serviços que ainda não existem e chama o
+  `create-lab.sh` sem mexer nos demais. Os hosts continuam com todos os
+  serviços.
+- **Remover:** três níveis: (1) só o container; (2) container, imagem e
+  configuração, com os dados mantidos; (3) tudo, inclusive dados e volumes,
+  com backup antes e confirmação digitada. O banco sai junto com a aplicação.
+  Se outro serviço depender do removido, o script avisa antes.
+- **Limpar:** apaga imagens antigas sem tag e o cache de build, mostra o
+  espaço antes e depois e permite apagar modelos do Ollama.
+
+### Backups automáticos
+
+Antes de atualizar, e antes de remover no nível 3, o script salva:
+
+- dump completo de cada banco envolvido em `~/backups/databases/<data-hora>/`;
+- o SQLite do n8n e do Open WebUI, além de volumes, dados e configuração
+  removidos, em `~/backups/volumes/<data-hora>/`.
+
+Ao final, o script mostra as pastas e os arquivos criados. Cada pasta tem um
+`RESTAURAR.txt` com os comandos de restauração. Se algum backup falhar, a
+operação é cancelada antes de qualquer alteração.
+
+> O n8n grava em SQLite (`~/lab-data/n8n/data/.n8n`), sem banco separado.
 
 ## Hosts locais
 
@@ -193,6 +303,9 @@ Endereços disponíveis incluem:
 - http://pgadmin.lab.test
 - http://mailhog.lab.test
 - http://evolution-api.lab.test
+- http://qdrant.lab.test/dashboard
+- http://open-webui.lab.test
+- http://searxng.lab.test
 
 ## Migrar uma instalação existente de `lab.local`
 
