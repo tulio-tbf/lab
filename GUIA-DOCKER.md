@@ -4,6 +4,9 @@ Este guia considera que os comandos serão executados no Terminal do macOS, no
 WSL ou em um terminal Linux e que as configurações do laboratório estão em
 `~/docker-shared`.
 
+Se você escolheu outro diretório com `--base`, substitua `~/docker-shared`
+pelo caminho de configuração usado na instalação.
+
 ```bash
 cd ~/docker-shared
 ```
@@ -64,38 +67,34 @@ docker network inspect infra-network
 O script `start-all.sh` cria essa rede automaticamente quando ela ainda não
 existe.
 
-## Resultado dos testes (30/10/2026)
+Para iniciar uma seleção de serviços com as dependências necessárias:
 
-Foram encontrados 14 containers em execução na rede `infra-network`. Os
-endpoints HTTP testados dos serviços disponíveis responderam, exceto o
-WordPress, que retorna erro de banco. O MinIO não possui container criado
-nesta instalação.
+```bash
+./scripts/start-custom.sh
+```
 
-| Serviço | Resultado observado |
-|---|---|
-| Traefik | Dashboard/API respondendo (HTTP 200). |
-| WordPress | HTTP 500, “Error establishing a database connection”. A conexão do PHP ao MySQL foi confirmada; o banco `wordpress` tem 0 tabelas. |
-| Mautic | Página de instalação respondendo (HTTP 200); MariaDB disponível, banco `mautic` com 0 tabelas. |
-| n8n | `/healthz` responde HTTP 200; versão 2.45.7. Banco SQLite íntegro, com 11 workflows, 4 credenciais e 1 usuário. Os workflows estavam inativos. |
-| Redis | `PING` responde `PONG`. |
-| MinIO | Não está em execução e não há container criado. |
-| Portainer | API responde, versão 2.45.3; a inicialização do administrador expirou. |
-| Adminer | Interface responde HTTP 200. |
-| pgAdmin | Endpoint de verificação `/misc/ping` responde HTTP 200. |
-| MailHog | Interface e API respondem HTTP 200; SMTP aceitou as mensagens de teste. |
-| Evolution API | API responde HTTP 200, versão 2.3.7; `evolution-db` está saudável e tem 37 tabelas. |
+O menu mostra apenas serviços criados e marca com `*` os que estão em
+execução. Bancos e outras dependências são iniciados junto com a aplicação
+selecionada.
 
-O `start-all.sh` tenta iniciar os serviços configurados e informa falhas ao
-final. O MinIO está temporariamente fora da lista de inicialização porque a
-imagem `minio/minio` configurada não está disponível. O script informa que o
-está ignorando e continua com os demais serviços; falhas em outros serviços
-continuam sendo reportadas normalmente.
+## Verificar o estado atual
 
-Os containers MySQL e MariaDB estão disponíveis, embora seus bancos
-`wordpress` e `mautic` tenham 0 tabelas. O PostgreSQL `evolution-db` tem 37
-tabelas. O n8n não tem banco separado: usa o SQLite restaurado em
-`~/lab-data/n8n/data/.n8n/database.sqlite`. O antigo `n8n-db` (PostgreSQL
-vazio, que nenhum serviço usava) foi removido do lab.
+O estado dos containers, das contas e dos bancos depende da instalação
+específica e pode mudar após cada inicialização ou atualização. Consulte o
+ambiente em execução em vez de assumir que um serviço está instalado ou
+saudável:
+
+```bash
+docker ps
+docker ps -a
+docker compose -f ~/docker-shared/<servico>/docker-compose.yml ps
+docker logs --tail=200 <container>
+```
+
+O n8n usa SQLite por padrão, não um container de banco separado. O MinIO tem
+Compose gerado, mas não consta na ordem padrão dos scripts gerados de
+inicialização; verifique se a imagem configurada está disponível antes de
+iniciá-lo manualmente.
 
 ## Usuários e senhas padrão
 
@@ -106,19 +105,20 @@ aplicação depende de a instalação inicial ter sido concluída.
 | Serviço | Usuário/chave | Senha | Estado/notas |
 |---|---|---|---|
 | Traefik | — | — | Dashboard sem autenticação; não exponha fora da máquina local. |
-| WordPress | — | — | Nenhum usuário do site foi configurado. O banco está vazio e o site retorna erro. |
-| MySQL do WordPress | `wordpress` | `wordpress123` | O segredo também está em `~/lab-data/wordpress/secrets/db_password`. Administrador: `root` / `root123`. |
-| Mautic | — | — | Ainda na instalação inicial; crie o primeiro usuário no assistente. Use `dev@lab.local` como email. |
+| WordPress | Definido durante a instalação | Definida durante a instalação | Não há credencial de usuário do site no Compose. |
+| MySQL do WordPress | `wordpress` | `wordpress123` | O segredo também fica em `~/lab-data/wordpress/secrets/db_password`. Administrador: `root` / `root123`. |
+| Mautic | Definido durante a instalação | Definida durante a instalação | Crie a conta no assistente se o site ainda não tiver sido instalado. |
 | MariaDB do Mautic | `mautic` | `mautic123` | Administrador: `root` / `root123`. |
-| n8n | `admin@lab.local` | Senha existente, não definida pelo Compose | Conta restaurada do banco antigo; use a senha já cadastrada. |
+| n8n | Criado no primeiro acesso | Criada no primeiro acesso | A conta e a chave de criptografia dependem dos dados persistidos; não são definidas no Compose. |
 | Redis | — | — | Sem autenticação configurada. |
-| MinIO | `admin` | `admin123` | Valores ainda definidos no Compose; serviço desativado na inicialização até a escolha de uma imagem disponível. |
-| Portainer | — | — | A inicialização do administrador expirou; não há senha padrão. Reinicie o container e conclua a criação do administrador em até 5 minutos. |
+| MinIO | `admin` | `admin123` | Valores definidos no Compose de exemplo. Revise-os antes de habilitar o serviço. |
+| Portainer | Criado na primeira configuração | Criada na primeira configuração | Não há senha padrão de administrador no Compose. |
 | Adminer | — | — | Sem conta própria; use as credenciais do banco selecionado. |
-| pgAdmin | `admin@example.com` | `admin123` | Email/senha de bootstrap definidos no Compose. Para novas contas, o email padrão é `dev@lab.local`; mudar a variável do Compose não altera um usuário já gravado no volume. |
+| pgAdmin | `admin@example.com` | `admin123` | Credenciais iniciais do Compose. Alterar variáveis depois da criação do volume pode não alterar uma conta existente. |
 | MailHog | — | — | Sem autenticação. |
 | Evolution API | API key: `change-me` | — | Chave definida no Compose; troque-a antes de qualquer exposição além do laboratório local. |
 | PostgreSQL da Evolution API | `postgres` | `postgres123` | Banco `evolution`. |
+| Open WebUI | Criado no primeiro acesso | Criada no primeiro acesso | O primeiro usuário cadastrado torna-se administrador. |
 
 As senhas de banco são valores de desenvolvimento e devem ser substituídas
 antes de qualquer uso fora do computador local.
@@ -138,6 +138,38 @@ No WSL, também é possível atualizar apenas um dos arquivos:
 ~/docker-shared/scripts/update-hosts.sh --local-only
 ~/docker-shared/scripts/update-hosts.sh --windows-only
 ```
+
+O arquivo `~/docker-shared/hosts-lab.txt` é a lista usada pelo sincronizador;
+ele não altera o arquivo de hosts sozinho. Execute `update-hosts.sh` após
+adicionar serviços ou mudar o domínio.
+
+## Atualização e manutenção do lab
+
+O script `update-lab.sh` oferece atualização, adição, remoção e limpeza:
+
+```bash
+~/docker-shared/scripts/update-lab.sh
+~/docker-shared/scripts/update-lab.sh atualizar
+~/docker-shared/scripts/update-lab.sh adicionar
+~/docker-shared/scripts/update-lab.sh remover
+~/docker-shared/scripts/update-lab.sh limpar
+```
+
+- **Atualizar:** faz backup dos bancos envolvidos, baixa imagens ou reconstrói
+  imagens locais e recria containers que estavam em execução. Se um backup
+  falhar, a atualização é cancelada.
+- **Adicionar:** seleciona serviços ainda não criados, gera seus arquivos e
+  pergunta se deseja iniciá-los.
+- **Remover:** permite remover apenas containers; containers, imagens e
+  configurações mantendo dados; ou também dados e volumes. A opção destrutiva
+  exige confirmação e backup.
+- **Limpar:** remove imagens sem uso e cache de build; pode também remover
+  modelos Ollama escolhidos pelo usuário.
+
+Os backups gerados ficam sob `~/backups/databases` e `~/backups/volumes`.
+Consulte `RESTAURAR.txt` em cada pasta de backup. Configure os diretórios
+alternativos no momento da criação do lab; eles ficam registrados em
+`~/docker-shared/lab.env`.
 
 ## Gerenciar um serviço
 
@@ -284,6 +316,16 @@ docker exec -it pgadmin sh
 docker exec -it mailhog sh
 docker exec -it evolution-api sh
 docker exec -it evolution-db sh
+docker exec -it qdrant sh
+docker exec -it open-webui sh
+docker exec -it searxng sh
+```
+
+O comando `docker exec` para `ollama` só se aplica aos modos `docker` e
+`docker-gpu`:
+
+```bash
+docker exec -it ollama sh
 ```
 
 Algumas imagens mínimas não possuem shell ou ferramentas administrativas. Se
@@ -302,6 +344,9 @@ docker inspect traefik
 ```
 
 Painel: <http://traefik.lab.test>
+
+O dashboard também é publicado na porta `8088` do host:
+<http://localhost:8088/dashboard/>.
 
 ### WordPress
 
@@ -374,19 +419,26 @@ cd ~/lab-data/wordpress/files
 
 Site: <http://wordpress.lab.test>
 
-No momento da verificação, o WordPress consegue abrir uma conexão MySQL, mas
-`wordpress` ainda não tem tabelas e a página mostra erro de banco. Não há
-usuário/senha de administrador do site para informar. Depois de restaurar o
-banco ou concluir uma instalação nova, use `dev@lab.local` como email de
-administrador.
+Se for uma instalação nova, conclua o assistente do WordPress e crie as
+credenciais de administrador. Se o site não carregar, verifique primeiro os
+logs e o estado do banco; a existência dos containers não significa que a
+instalação do WordPress já tenha sido concluída.
 
 O serviço registra `wordpress.lab.test` como alias na rede Docker
 `infra-network`. Portanto, essa mesma URL pode ser usada nas credenciais do
 n8n e em integrações executadas por outros containers do laboratório.
 
-O laboratório define `WP_ENVIRONMENT_TYPE` como `local`. Isso permite criar
-Application Passwords para integrações REST em HTTP. Em produção, utilize HTTPS
-e altere o tipo de ambiente para `production`.
+O Compose passa `WORDPRESS_ENVIRONMENT_TYPE=local` ao container. Antes de
+depender de Application Passwords via HTTP, confirme que a constante
+`WP_ENVIRONMENT_TYPE` foi efetivamente definida na configuração do WordPress:
+
+```bash
+docker exec --user www-data wordpress wp eval \
+  'echo defined("WP_ENVIRONMENT_TYPE") ? WP_ENVIRONMENT_TYPE : "não definida";'
+```
+
+Não exponha autenticação em HTTP fora do ambiente local; em produção, utilize
+HTTPS e configure corretamente o tipo de ambiente.
 
 ### Banco do WordPress — MySQL
 
@@ -397,37 +449,39 @@ O WordPress e o MySQL leem a senha compartilhada do arquivo:
 ```
 
 Para trocar a senha, altere primeiro o usuário no MySQL, atualize o arquivo
-acima e recrie os containers `wordpress-db` e `wordpress`.
+acima e recrie os containers `wordpress-db` e `wordpress`. A senha usada no
+volume já inicializado não muda apenas por editar variáveis ou o arquivo.
 
 Abrir o cliente MySQL:
 
 ```bash
-docker exec -it wordpress-db mysql -uwordpress -pwordpress123 wordpress
+docker exec -it -e MYSQL_PWD=wordpress123 wordpress-db mysql -uwordpress wordpress
 ```
 
 Verificar disponibilidade:
 
 ```bash
-docker exec wordpress-db mysqladmin ping -uroot -proot123
+docker exec wordpress-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mysqladmin ping -uroot'
 ```
 
 Criar backup:
 
 ```bash
-docker exec wordpress-db mysqldump -uwordpress -pwordpress123 wordpress > wordpress-backup.sql
+docker exec -e MYSQL_PWD=wordpress123 wordpress-db \
+  mysqldump -uwordpress wordpress > wordpress-backup.sql
 ```
 
 Restaurar backup:
 
 ```bash
-docker exec -i wordpress-db mysql -uwordpress -pwordpress123 wordpress < wordpress-backup.sql
+docker exec -i -e MYSQL_PWD=wordpress123 wordpress-db \
+  mysql -uwordpress wordpress < wordpress-backup.sql
 ```
 
 ### Mautic
 
-O Mautic está na tela de instalação e o banco ainda não contém tabelas. Crie o
-primeiro usuário pelo assistente usando `dev@lab.local` como email; não existe
-uma senha padrão de aplicação nesta instalação.
+Se for uma instalação nova, conclua o assistente e crie as credenciais do
+primeiro usuário. As credenciais de aplicação não são definidas no Compose.
 
 ```bash
 docker exec -it mautic sh
@@ -453,15 +507,17 @@ Aplicação: <http://mautic.lab.test>
 ### Banco do Mautic — MariaDB
 
 ```bash
-docker exec -it mautic-db mariadb -umautic -pmautic123 mautic
-docker exec mautic-db mariadb-admin ping -uroot -proot123
+docker exec -it -e MYSQL_PWD=mautic123 mautic-db mariadb -umautic mautic
+docker exec mautic-db sh -c 'MYSQL_PWD="$MYSQL_ROOT_PASSWORD" mariadb-admin ping -uroot'
 ```
 
 Backup e restauração:
 
 ```bash
-docker exec mautic-db mariadb-dump -umautic -pmautic123 mautic > mautic-backup.sql
-docker exec -i mautic-db mariadb -umautic -pmautic123 mautic < mautic-backup.sql
+docker exec -e MYSQL_PWD=mautic123 mautic-db \
+  mariadb-dump -umautic mautic > mautic-backup.sql
+docker exec -i -e MYSQL_PWD=mautic123 mautic-db \
+  mariadb -umautic mautic < mautic-backup.sql
 ```
 
 ### n8n
@@ -486,10 +542,10 @@ nós de arquivo a esse diretório.
 
 Aplicação: <http://n8n.lab.test>
 
-O n8n está usando SQLite, restaurado da instalação anterior. A conta existente
-é `admin@lab.local`; a senha não vem do Compose e deve ser a senha já usada na
-instalação antiga. Há 11 workflows e 4 credenciais restaurados. Todos os
-workflows estavam inativos na origem; confira-os antes de ativar.
+O n8n usa SQLite no diretório persistente `~/lab-data/n8n/data/.n8n`. As contas,
+workflows, credenciais e a chave de criptografia pertencem aos dados dessa
+instalação e não são definidos pelo Compose. Preserve o diretório inteiro ao
+migrar ou restaurar o n8n.
 
 #### Backup do banco SQLite ativo
 
@@ -526,6 +582,81 @@ docker exec redis redis-cli DBSIZE
 Evite executar `FLUSHDB` ou `FLUSHALL` sem um backup e confirmação do banco
 selecionado.
 
+### Ollama, Qdrant, Open WebUI e SearXNG
+
+Esses serviços podem ser selecionados pelo atalho `IA` durante a criação do
+lab. A configuração registra o modo do Ollama em
+`~/docker-shared/ollama/ollama.env`.
+
+#### Ollama
+
+O Ollama pode rodar em container (`docker` ou `docker-gpu`), no sistema
+(`native`) ou em outra máquina (`remote`). Consulte o modo e a URL configurada:
+
+```bash
+cat ~/docker-shared/ollama/ollama.env
+```
+
+Para modos em container:
+
+```bash
+docker logs -f --tail=200 ollama
+docker exec ollama ollama list
+docker exec ollama ollama ps
+```
+
+Nos modos `native` e `remote`, o Ollama não é um container deste lab; use o
+comando ou a máquina onde ele está instalado. Os serviços na rede Docker usam
+a URL definida no arquivo `ollama.env`. Para que containers acessem o Ollama
+no host ou em outra máquina, ele precisa escutar na rede, por exemplo com
+`OLLAMA_HOST=0.0.0.0:11434`; limite o acesso à rede local pelo firewall.
+
+Baixe o modelo de chat recomendado e o modelo de embedding configurado:
+
+```bash
+~/docker-shared/ollama/pull-models.sh
+```
+
+Ou indique um modelo:
+
+```bash
+~/docker-shared/ollama/pull-models.sh qwen3:8b
+```
+
+Em modo container, os modelos ficam em `~/lab-data/ollama`; em modo nativo,
+ficam no armazenamento padrão do Ollama no sistema. O Open WebUI usa o Ollama
+configurado no momento da geração dos arquivos Compose.
+
+#### Qdrant
+
+Painel: <http://qdrant.lab.test/dashboard>
+
+Dentro da `infra-network`, use a API em `http://qdrant:6333`. Os dados ficam em
+`~/lab-data/qdrant`. O Compose não configura autenticação; mantenha o serviço
+restrito ao ambiente local.
+
+#### Open WebUI
+
+Interface: <http://open-webui.lab.test>
+
+Cadastre a primeira conta para criar o administrador. Os dados e a base SQLite
+do serviço ficam em `~/lab-data/open-webui`. Para conectar com Ollama, confira
+o valor de `OLLAMA_BASE_URL` no Compose gerado.
+
+#### SearXNG
+
+Interface: <http://searxng.lab.test>
+
+Para consultas de agentes dentro da rede Docker, use:
+
+```text
+http://searxng:8080/search?q=termo&format=json
+```
+
+A configuração persistente fica em `~/docker-shared/searxng/config`. O
+instalador preserva o `settings.yml` existente, inclusive sua chave secreta;
+não publique essa chave.
+
 ### MinIO
 
 ```bash
@@ -535,12 +666,19 @@ docker inspect minio
 
 Console: <http://minio.lab.test>
 
-O Compose ainda referencia `minio/minio`, cuja imagem não está disponível no
-Docker Hub. O projeto original foi descontinuado; a opção oficial atual é
-MinIO AIStor, que requer licença. Por enquanto, `start-all.sh` ignora esse
-serviço para não interromper o laboratório. O Compose e os dados em
-`~/lab-data/minio` foram preservados; não execute `docker compose up` nesse
-diretório até escolher uma imagem compatível e confirmar seus requisitos.
+O Compose gerado referencia `minio/minio`, mas o MinIO não está na ordem
+padrão dos scripts gerados de inicialização. Antes de iniciar manualmente,
+confirme que a imagem está disponível e que ela atende ao seu uso:
+
+```bash
+cd ~/docker-shared/minio
+docker compose config
+docker compose pull
+docker compose up -d
+```
+
+Se a imagem não puder ser baixada, escolha uma alternativa compatível antes de
+alterar o Compose. Os dados ficam em `~/lab-data/minio`.
 
 Para administrar pela CLI, use um container temporário:
 
@@ -558,13 +696,10 @@ docker inspect portainer
 
 Interface: <http://portainer.lab.test>
 
-Na validação, o Portainer informou `Administrator initialization timeout`.
-Para reabrir o cadastro, reinicie o serviço e crie o administrador pela
-interface em até 5 minutos:
-
-```bash
-docker compose -f ~/docker-shared/portainer/docker-compose.yml restart
-```
+Na primeira inicialização, crie o administrador pela interface seguindo o
+prazo e as instruções mostrados pelo Portainer. O estado de inicialização fica
+persistido nos dados do serviço; reiniciar o container não necessariamente
+reabre o cadastro.
 
 ### Adminer
 
@@ -614,27 +749,21 @@ Configuração SMTP para clientes dentro do Docker:
 - Autenticação: desativada
 - Remetente e endereço de teste: `dev@lab.local`
 
-Em 30/10/2026, foi feito um teste SMTP real a partir do namespace de rede de
-cada um dos 14 containers ativos. O MailHog aceitou as 14 mensagens, que podem
-ser conferidas na interface acima procurando o assunto
-`DOCKER-LAB-NETWORK-TEST`. O teste usou um cliente auxiliar temporário na rede
-de cada container: comprova DNS, conexão TCP e aceitação SMTP pelo MailHog,
-mas **não configura o envio de email dentro de cada aplicação**. O MailHog
-somente captura as mensagens e não as entrega a destinatários externos.
+O MailHog/Mailpit somente captura mensagens para testes; não as entrega a
+destinatários externos. Para confirmar o recebimento, envie uma mensagem de
+teste pela aplicação e confira a caixa de entrada na interface web.
 
 Para envio feito pelas próprias aplicações, configure o cliente correspondente:
 
 - **WordPress:** configure um plugin SMTP (por exemplo, WP Mail SMTP) com os
-  valores acima. O site precisa ter banco/tabelas e estar inicializado antes
-  disso; atualmente ele apresenta erro de banco.
+  valores acima. O site precisa ter sido instalado e inicializado antes disso.
 - **Mautic:** após concluir a instalação, configure o transporte de email como
   SMTP, host `mailhog`, porta `1025`, sem TLS nem autenticação, e remetente
   `dev@lab.local`.
 - **n8n:** crie uma credencial SMTP para o nó **Send Email** com host `mailhog`,
   porta `1025`, sem SSL/TLS nem autenticação; use `dev@lab.local` como remetente.
-- **Demais containers:** o teste confirma que alcançam o servidor SMTP, mas
-  serviços como bancos, Redis, Traefik e Evolution API não têm configuração de
-  envio de email declarada no Compose.
+- **Demais containers:** serviços como bancos, Redis, Traefik e Evolution API
+  não têm configuração de envio de email declarada no Compose.
 
 ### Evolution API
 
@@ -660,6 +789,10 @@ cd ~/docker-shared/evolution-api
 docker compose config
 docker compose up -d --force-recreate
 ```
+
+Por padrão, a API também publica a porta `8080` no host, além do endereço
+passar pelo Traefik. Revise ou remova `ports` no Compose se não precisar do
+acesso direto.
 
 ### Banco da Evolution API — PostgreSQL
 
