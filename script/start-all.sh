@@ -14,12 +14,11 @@ elif [[ $# -gt 0 ]]; then
 fi
 
 source "$SCRIPT_DIR/../lib/platform.sh"
-lab_require_docker || exit 1
+source "${LIB_DIR:-$SCRIPT_DIR/../lib}/engine.sh"
+engine_load "$BASE" || exit 1
+engine_require || exit 1
 
-if ! docker network inspect infra-network >/dev/null 2>&1; then
-  echo "Criando a rede compartilhada infra-network"
-  docker network create infra-network >/dev/null
-fi
+engine_ensure_network infra-network >/dev/null
 
 lab_check_ssh_agent
 
@@ -60,12 +59,12 @@ do
   fi
 
   echo "Subindo $service"
-  if ! (cd -- "$BASE/$service" && docker compose up -d --build); then
+  if ! (cd -- "$BASE/$service" && engine_compose up -d --build); then
     FAILED_SERVICES+=("$service")
   fi
 done
 
-docker ps
+engine ps
 
 if ((${#FAILED_SERVICES[@]})); then
   printf 'Erro: falha ao subir os seguintes serviços: %s\n' "${FAILED_SERVICES[*]}" >&2

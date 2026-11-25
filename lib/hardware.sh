@@ -119,14 +119,17 @@ lab_hw_detect() {
   HW_DOCKER_MEM_MB=0
   HW_DOCKER_CPUS=0
   runtimes=""
-  if docker info >/dev/null 2>&1; then
-    case "$(docker info --format '{{.OperatingSystem}}' 2>/dev/null)" in
+  if [[ "$LAB_ENGINE" == podman ]]; then
+    HW_DOCKER_MEM_MB="$HW_HOST_RAM_MB"
+    HW_DOCKER_CPUS="$HW_CPU_CORES"
+  elif engine_available; then
+    case "$(engine info --format '{{.OperatingSystem}}' 2>/dev/null)" in
       *"Docker Desktop"*) HW_DOCKER_DESKTOP=1 ;;
     esac
-    bytes="$(docker info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
+    bytes="$(engine info --format '{{.MemTotal}}' 2>/dev/null || echo 0)"
     [[ "$bytes" =~ ^[0-9]+$ ]] && HW_DOCKER_MEM_MB=$((bytes / 1048576))
-    HW_DOCKER_CPUS="$(docker info --format '{{.NCPU}}' 2>/dev/null || echo 0)"
-    runtimes="$(docker info --format '{{range $name, $_ := .Runtimes}}{{$name}} {{end}}' 2>/dev/null || true)"
+    HW_DOCKER_CPUS="$(engine info --format '{{.NCPU}}' 2>/dev/null || echo 0)"
+    runtimes="$(engine info --format '{{range $name, $_ := .Runtimes}}{{$name}} {{end}}' 2>/dev/null || true)"
   fi
 
   HW_NVIDIA_GPU=0
@@ -171,7 +174,7 @@ lab_ollama_recommend_mode() {
     if ((HW_DOCKER_GPU)); then
       echo "docker-gpu|GPU NVIDIA acessível pelo Docker; o container roda com aceleração."
     else
-      echo "native|GPU NVIDIA detectada, mas o Docker Engine não tem o NVIDIA Container Toolkit; o Ollama nativo usa a GPU direto (ou instale o toolkit e use --ollama-mode docker-gpu)."
+      echo "native|GPU NVIDIA detectada; o Ollama nativo pode usar a GPU diretamente."
     fi
     return
   fi
@@ -268,16 +271,16 @@ lab_hw_report() {
   printf 'CPU:           %s, %s núcleos, AVX2: %s\n' "$HW_CPU_NAME" "$HW_CPU_CORES" "$([[ $HW_AVX2 == 1 ]] && echo sim || echo não)"
   printf 'RAM física:    %s GB\n' "$(_hw_gb "$HW_HOST_RAM_MB")"
   if ((HW_DOCKER_MEM_MB)); then
-    printf 'Docker:        %s, %s GB de RAM, %s CPUs\n' \
-      "$([[ $HW_DOCKER_DESKTOP == 1 ]] && echo 'Docker Desktop' || echo 'Docker Engine')" \
+    printf 'Engine:        %s, %s GB de RAM, %s CPUs\n' \
+      "$LAB_ENGINE" \
       "$(_hw_gb "$HW_DOCKER_MEM_MB")" "$HW_DOCKER_CPUS"
   else
-    printf 'Docker:        não acessível\n'
+    printf 'Engine:        %s indisponível\n' "$LAB_ENGINE"
   fi
   if ((HW_APPLE_SILICON)); then
     printf 'GPU:           Apple Silicon (Metal, só fora do Docker)\n'
   elif ((HW_NVIDIA_GPU)); then
-    printf 'GPU:           %s, %s GB VRAM, acessível pelo Docker: %s\n' "$HW_GPU_NAME" "$(_hw_gb "$HW_GPU_VRAM_MB")" "$([[ $HW_DOCKER_GPU == 1 ]] && echo sim || echo não)"
+    printf 'GPU:           %s, %s GB VRAM, acessível pelo engine: %s\n' "$HW_GPU_NAME" "$(_hw_gb "$HW_GPU_VRAM_MB")" "$([[ $HW_DOCKER_GPU == 1 ]] && echo sim || echo não)"
   else
     printf 'GPU:           nenhuma GPU utilizável para LLM\n'
   fi
@@ -312,7 +315,7 @@ lab_hw_report() {
         HW_WARNINGS=$((HW_WARNINGS + 1))
       fi
       if ((budget < 2000)); then
-        printf '  Alerta: não sobra memória nem para o menor modelo. Reduza os serviços, aumente a RAM do Docker ou use --ollama-mode remote.\n'
+        printf '  Alerta: não sobra memória nem para o menor modelo. Reduza os serviços, aumente a RAM disponível ou use --ollama-mode remote.\n'
         HW_WARNINGS=$((HW_WARNINGS + 1))
       fi
       if [[ "$mode" == "docker" ]]; then
@@ -327,7 +330,7 @@ lab_hw_report() {
 
   suggested_docker_mb=$(( (docker_needed + 1023) / 1024 * 1024 ))
   ((suggested_docker_mb < 4096)) && suggested_docker_mb=4096
-  printf '\nMemória recomendada para o Docker: %s GB' "$((suggested_docker_mb / 1024))"
+  printf '\nMemória recomendada para os containers: %s GB' "$((suggested_docker_mb / 1024))"
   if ((HW_DOCKER_MEM_MB)); then
     printf ' (atual: %s GB)' "$(_hw_gb "$HW_DOCKER_MEM_MB")"
   fi
@@ -342,7 +345,7 @@ lab_hw_report() {
         printf '  Ajuste em %%UserProfile%%\\.wslconfig e execute "wsl --shutdown":\n'
         printf '    [wsl2]\n    memory=%sGB\n' "$((suggested_docker_mb / 1024))"
         ;;
-      *) printf '  O Docker Engine usa toda a RAM do Linux; feche outros programas ou reduza os serviços.\n' ;;
+      *) printf '  O engine usa a RAM do Linux; feche outros programas ou reduza os serviços.\n' ;;
     esac
   fi
 
@@ -363,7 +366,7 @@ lab_hw_report() {
   fi
   if ((HW_HOST_RAM_MB)) && ((host_needed > HW_HOST_RAM_MB)); then
     HW_WARNINGS=$((HW_WARNINGS + 1))
-    printf '  Alerta: Docker + modelo + sistema pedem ~%s GB, mas a máquina tem %s GB.\n' "$(_hw_gb "$host_needed")" "$(_hw_gb "$HW_HOST_RAM_MB")"
+    printf '  Alerta: Containers + modelo + sistema pedem ~%s GB, mas a máquina tem %s GB.\n' "$(_hw_gb "$host_needed")" "$(_hw_gb "$HW_HOST_RAM_MB")"
     printf '  Selecione menos serviços, use um modelo menor ou rode o Ollama em outra máquina (--ollama-mode remote).\n'
   fi
   printf '\n'

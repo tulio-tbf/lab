@@ -17,7 +17,7 @@ lab_platform() {
 }
 
 lab_require_docker() {
-  if docker info >/dev/null 2>&1; then
+  if engine_available; then
     return 0
   fi
 

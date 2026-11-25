@@ -213,7 +213,7 @@ lab_choose_services() {
 # Serviços publicados pelo Traefik em <serviço>.<domínio>.
 LAB_WEB_SERVICES=(traefik wordpress mautic n8n minio portainer adminer pgadmin mailhog evolution-api qdrant open-webui searxng)
 
-# Um serviço existe quando tem docker-compose.yml ou roda fora do Docker
+# Um serviço existe quando tem docker-compose.yml ou roda fora do engine
 # (EXTERNAL.txt, como o Ollama nativo ou remoto).
 lab_service_exists() {
   local base="$1"
@@ -291,7 +291,7 @@ lab_db_engine() {
 }
 
 lab_container_running() {
-  [[ "$(docker inspect -f '{{.State.Running}}' "$1" 2>/dev/null || true)" == "true" ]]
+  [[ "$(engine container inspect -f '{{.State.Running}}' "$1" 2>/dev/null || true)" == "true" ]]
 }
 
 # Sobe os serviços informados (já na ordem certa). Retorna erro se algum
@@ -303,14 +303,14 @@ lab_compose_up() {
 
   for service in "$@"; do
     if [[ -f "$base/$service/EXTERNAL.txt" ]]; then
-      echo "$service roda fora do Docker:"
+      echo "$service roda fora do engine:"
       sed 's/^/  /' "$base/$service/EXTERNAL.txt"
       continue
     fi
     [[ -f "$base/$service/docker-compose.yml" ]] || continue
 
     echo "Subindo $service"
-    if ! (cd -- "$base/$service" && docker compose up -d --build); then
+    if ! (cd -- "$base/$service" && engine_compose up -d --build); then
       failed+=("$service")
     fi
   done

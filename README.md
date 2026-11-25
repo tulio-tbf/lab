@@ -52,6 +52,48 @@ Todos os containers que precisam resolver outros containers usam a rede
 `infra-network`. Os serviços web também recebem labels do Traefik e são
 publicados em `http://<servico>.<dominio>`.
 
+## Container Engine Support
+
+**Docker é o padrão** e continua usando `docker compose`. Instalações antigas
+sem `LAB_ENGINE` são tratadas como Docker.
+
+```bash
+./install.sh --engine docker
+```
+
+**Podman rootless em Linux** é o alvo do MVP. A execução integrada ainda precisa
+ser confirmada em Linux nativo. WSL, Podman Machine no macOS e Windows nativo
+estão fora do escopo deste MVP.
+
+```bash
+systemctl --user enable --now podman.socket
+./install.sh --engine podman --base "$HOME/podman-lab" \
+  --data "$HOME/podman-lab-data" --backups "$HOME/podman-lab-backups" \
+  --services "wordpress n8n"
+"$HOME/podman-lab/scripts/update-hosts.sh"
+"$HOME/podman-lab/scripts/start-all.sh"
+```
+
+Use Podman 5.x, o provider `podman-compose` 1.5 ou superior, Netavark com
+Aardvark DNS, `curl` e um usuário com mapeamentos em `/etc/subuid` e
+`/etc/subgid`. Verifique `podman info` e
+`PODMAN_COMPOSE_PROVIDER=podman-compose podman compose version`.
+O instalador grava a escolha em `lab.env`. Os scripts consultam esse arquivo
+e usam o engine da instalação.
+
+Com Podman, acesse os serviços em `http://<serviço>.<domínio>:8000`. A opção
+`--http-port` escolhe a porta na instalação. O Portainer fica desabilitado
+nesse modo. Para administrar os serviços use os scripts do Lab, `podman ps`
+e `podman logs`.
+
+Instalações Docker e Podman usam bases, diretórios de dados e volumes
+independentes. Uma migração entre engines requer backup, nova instalação e
+restauração manual.
+
+- [Orientação de escolha da engine](ESCOLHA-DA-ENGINE.md)
+- [Guia de administração do Podman](GUIA-PODMAN.md)
+- [Guia de administração do Docker](GUIA-DOCKER.md)
+
 ## Plataforma suportada
 
 | Plataforma | Docker recomendado | Observações |
@@ -61,7 +103,7 @@ publicados em `http://<servico>.<dominio>`.
 | Windows com Git Bash | Docker Desktop | Caminhos Windows podem ser fornecidos ao instalador |
 | Linux | Docker Engine + Docker Compose v2 | Não exige Docker Desktop |
 
-Pré-requisitos:
+Pré-requisitos para o caminho Docker:
 
 - Docker em execução;
 - Docker Compose v2 (`docker compose`);

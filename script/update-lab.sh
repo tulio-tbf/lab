@@ -68,10 +68,12 @@ BASE="$(cd -- "$BASE" && pwd -P)"
 
 # shellcheck source=../lib/platform.sh
 source "$LIB_DIR/platform.sh"
+source "$LIB_DIR/engine.sh"
 # shellcheck source=../lib/services.sh
 source "$LIB_DIR/services.sh"
-lab_require_docker || exit 1
 lab_load_env "$BASE"
+engine_load "$BASE" || exit 1
+engine_require || exit 1
 
 # No Git Bash, impede que caminhos passados ao docker sejam convertidos.
 export MSYS_NO_PATHCONV=1
@@ -116,13 +118,13 @@ expand_targets() {
 }
 
 compose_images() {
-  (cd -- "$BASE/$1" && docker compose config --images 2>/dev/null) || true
+  (cd -- "$BASE/$1" && engine_compose_images 2>/dev/null) || true
 }
 
 image_ids() {
   local image
   for image in $(compose_images "$1"); do
-    docker image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo "ausente:$image"
+    engine image inspect -f '{{.Id}}' "$image" 2>/dev/null || echo "ausente:$image"
   done
   return 0
 }
@@ -141,6 +143,14 @@ backup_dir() {
   BACKUP_DIR="$LAB_BACKUPS/$1/$STAMP"
   mkdir -p "$BACKUP_DIR"
   in_list "$BACKUP_DIR" "${BACKUP_DIRS[@]+"${BACKUP_DIRS[@]}"}" || BACKUP_DIRS+=("$BACKUP_DIR")
+  if [[ ! -f "$BACKUP_DIR/RESTAURAR.txt" ]]; then
+    {
+      printf '# No Bash, carregue a configuração da instalação de destino. Origem: %s\n' "$LAB_ENGINE"
+      printf 'LAB_RESTORE_BASE=%q\n' "$BASE"
+      printf '%s\n' 'source "$LAB_RESTORE_BASE/scripts/engine.sh"' \
+        'engine_load "$LAB_RESTORE_BASE" || exit 1' ''
+    } > "$BACKUP_DIR/RESTAURAR.txt"
+  fi
 }
 
 wait_db_ready() {
@@ -151,10 +161,10 @@ wait_db_ready() {
   for ((attempt = 0; attempt < 30; attempt++)); do
     case "$engine" in
       postgres)
-        docker exec "$service" sh -c 'pg_isready -q -U "$POSTGRES_USER"' >/dev/null 2>&1 && return 0
+        engine_exec "$service" sh -c 'pg_isready -q -U "$POSTGRES_USER"' >/dev/null 2>&1 && return 0
         ;;
       mysql)
-        docker exec "$service" sh -c 'c=$(command -v mariadb-admin || command -v mysqladmin); MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$c" -uroot ping' >/dev/null 2>&1 && return 0
+        engine_exec "$service" sh -c 'c=$(command -v mariadb-admin || command -v mysqladmin); MYSQL_PWD="$MYSQL_ROOT_PASSWORD" "$c" -uroot ping' >/dev/null 2>&1 && return 0
         ;;
     esac
     sleep 2
@@ -172,7 +182,7 @@ backup_database() {
 
   if ! lab_container_running "$service"; then
     echo "Iniciando $service temporariamente para o backup"
-    (cd -- "$BASE/$service" && docker compose up -d) || return 1
+    (cd -- "$BASE/$service" && engine_compose up -d) || return 1
     started=1
   fi
 
@@ -186,10 +196,10 @@ backup_database() {
     echo "Backup do banco $service"
     case "$engine" in
       postgres)
-        docker exec "$service" sh -c 'exec pg_dumpall -U "$POSTGRES_USER"' | gzip > "$file" || status=1
+        engine_exec "$service" sh -c 'exec pg_dumpall -U "$POSTGRES_USER"' | gzip > "$file" || status=1
         ;;
       mysql)
-        docker exec "$service" sh -c 'd=$(command -v mariadb-dump || command -v mysqldump); MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec "$d" -uroot --all-databases --single-transaction --routines --events' | gzip > "$file" || status=1
+        engine_exec "$service" sh -c 'd=$(command -v mariadb-dump || command -v mysqldump); MYSQL_PWD="$MYSQL_ROOT_PASSWORD" exec "$d" -uroot --all-databases --single-transaction --routines --events' | gzip > "$file" || status=1
         ;;
     esac
 
@@ -201,9 +211,9 @@ backup_database() {
       {
         echo "# $service ($engine)"
         if [[ "$engine" == "postgres" ]]; then
-          echo "gunzip -c '$file' | docker exec -i $service sh -c 'psql -U \"\$POSTGRES_USER\" -d postgres'"
+          echo "gunzip -c $(printf '%q' "$file") | engine_exec -i $service sh -c 'psql -U \"\$POSTGRES_USER\" -d postgres'"
         else
-          echo "gunzip -c '$file' | docker exec -i $service sh -c 'c=\$(command -v mariadb || command -v mysql); MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" exec \"\$c\" -uroot'"
+          echo "gunzip -c $(printf '%q' "$file") | engine_exec -i $service sh -c 'c=\$(command -v mariadb || command -v mysql); MYSQL_PWD=\"\$MYSQL_ROOT_PASSWORD\" exec \"\$c\" -uroot'"
         fi
         echo
       } >> "$dir/RESTAURAR.txt"
@@ -211,13 +221,13 @@ backup_database() {
   fi
 
   if ((started)); then
-    (cd -- "$BASE/$service" && docker compose stop) >/dev/null 2>&1 || true
+    (cd -- "$BASE/$service" && engine_compose stop) >/dev/null 2>&1 || true
   fi
   return "$status"
 }
 
 # Compacta um diretório ou arquivo do host, ou um volume Docker. Usa um
-# container alpine para ler arquivos de outros usuários (mysql, www-data) sem
+# container docker.io/library/alpine para ler arquivos de outros usuários (mysql, www-data) sem
 # sudo.
 backup_archive() {
   local kind="$1"   # dir | volume (dir também aceita um arquivo)
@@ -234,14 +244,14 @@ backup_archive() {
         return 0
       fi
       ;;
-    volume) docker volume inspect "$source" >/dev/null 2>&1 || return 0 ;;
+    volume) engine_volume_exists "$source" || return 0 ;;
   esac
   backup_dir volumes
   dir="$BACKUP_DIR"
   mount="$source:/src:ro"
 
   echo "Backup de $name"
-  if ! docker run --rm -v "$mount" -v "$dir:/backup" alpine \
+  if ! engine_data_run -v "$mount" -v "$dir:/backup" docker.io/library/alpine \
     tar czf "/backup/$name.tar.gz" -C /src "$item"; then
     echo "Erro: falha no backup de $name." >&2
     return 1
@@ -250,12 +260,12 @@ backup_archive() {
   {
     echo "# $name"
     if [[ "$kind" == "volume" ]]; then
-      echo "docker volume create $source"
-      echo "docker run --rm -v $source:/dst -v '$dir:/backup' alpine tar xzf /backup/$name.tar.gz -C /dst"
+      echo "engine_volume_create $source"
     else
-      echo "mkdir -p '$source'"
-      echo "docker run --rm -v '$source:/dst' -v '$dir:/backup' alpine tar xzf /backup/$name.tar.gz -C /dst"
+      printf 'mkdir -p -- %q\n' "$source"
     fi
+    printf 'engine_data_run -v %q -v %q docker.io/library/alpine tar xzf %q -C /dst\n' \
+      "$source:/dst" "$dir:/backup:ro" "/backup/$name.tar.gz"
     echo
   } >> "$dir/RESTAURAR.txt"
 }
@@ -289,7 +299,7 @@ action_update() {
     echo "Nenhum serviço criado em $BASE." >&2
     return 1
   fi
-  LAB_MENU_RUNNING="$(docker ps --format '{{.Names}}' | tr '\n' ' ')"
+  LAB_MENU_RUNNING="$(engine ps --format '{{.Names}}' | tr '\n' ' ')"
   lab_choose_services "atualizar" || return 1
 
   while IFS= read -r service; do
@@ -318,7 +328,7 @@ action_update() {
   for service in "${targets[@]}"; do
     printf '\n--- %s\n' "$service"
     if [[ -f "$BASE/$service/EXTERNAL.txt" ]]; then
-      echo "Roda fora do Docker; atualize-o no próprio sistema:"
+      echo "Roda fora do engine; atualize-o no próprio sistema:"
       case "$(lab_platform)" in
         macos) echo "  brew upgrade ollama (ou pelo app do Ollama)" ;;
         *) echo "  reinstale pelo instalador oficial (https://ollama.com/download)" ;;
@@ -329,15 +339,17 @@ action_update() {
     before="$(image_ids "$service")"
     if grep -qE '^[[:space:]]+build:' "$BASE/$service/docker-compose.yml"; then
       echo "Reconstruindo a imagem com a base mais recente"
-      (cd -- "$BASE/$service" && docker compose build --pull) || { failed+=("$service"); continue; }
+      (cd -- "$BASE/$service" && engine_compose build --pull) || { failed+=("$service"); continue; }
     else
-      (cd -- "$BASE/$service" && docker compose pull) || { failed+=("$service"); continue; }
+      (cd -- "$BASE/$service" && engine_compose pull) || { failed+=("$service"); continue; }
     fi
     after="$(image_ids "$service")"
 
     if lab_container_running "$service"; then
       # Recria só se a imagem mudou.
-      (cd -- "$BASE/$service" && docker compose up -d) || { failed+=("$service"); continue; }
+      if [[ "$before" != "$after" ]]; then
+        (cd -- "$BASE/$service" && engine_compose up -d --force-recreate) || { failed+=("$service"); continue; }
+      fi
     else
       stopped+=("$service")
     fi
@@ -350,7 +362,7 @@ action_update() {
   done
 
   printf '\nRemovendo imagens antigas que ficaram sem uso\n'
-  docker image prune -f | tail -n 1
+  engine image prune -f | tail -n 1
 
   printf '\n=== Resultado ===\n'
   ((${#updated[@]})) && printf 'Atualizados:          %s\n' "${updated[*]}"
@@ -384,6 +396,7 @@ action_add() {
 
   LAB_CHOICES=()
   for service in "${LAB_ALL_SERVICES[@]}"; do
+    [[ "$LAB_ENGINE:$service" != podman:portainer ]] || continue
     lab_service_exists "$BASE" "$service" || LAB_CHOICES+=("$service")
   done
   if ((${#LAB_CHOICES[@]} == 0)); then
@@ -423,7 +436,7 @@ action_remove() {
     echo "Nenhum serviço criado em $BASE."
     return 0
   fi
-  LAB_MENU_RUNNING="$(docker ps --format '{{.Names}}' | tr '\n' ' ')"
+  LAB_MENU_RUNNING="$(engine ps --format '{{.Names}}' | tr '\n' ' ')"
   lab_choose_services "remover" || return 1
 
   # Ordem inversa da inicialização: aplicações antes dos bancos e do
@@ -466,7 +479,7 @@ EOF
       for service in "${targets[@]}"; do
         [[ -f "$BASE/$service/docker-compose.yml" ]] || continue
         echo "Parando e removendo o container $service"
-        (cd -- "$BASE/$service" && docker compose down) || failed=1
+        (cd -- "$BASE/$service" && engine_compose down) || failed=1
       done
       return "$failed"
       ;;
@@ -505,8 +518,10 @@ EOF
       [[ -n "$other" ]] && images+=("$other")
     done < <(compose_images "$service")
     echo "Parando e removendo o container $service"
-    (cd -- "$BASE/$service" && docker compose down) || failed=1
+    (cd -- "$BASE/$service" && engine_compose down) || failed=1
   done
+
+  ((failed == 0)) || return 1
 
   if [[ "$level" == "3" ]]; then
     for service in "${targets[@]}"; do
@@ -526,14 +541,14 @@ EOF
 
     for service in "${targets[@]}"; do
       for vol in $(lab_service_volumes "$service"); do
-        docker volume inspect "$vol" >/dev/null 2>&1 || continue
+        engine_volume_exists "$vol" || continue
         echo "Apagando o volume $vol"
-        docker volume rm "$vol" >/dev/null || failed=1
+        engine_volume_remove "$vol" >/dev/null || failed=1
       done
       for rel in $(lab_service_data_dirs "$service"); do
         [[ -d "$LAB_DATA/$rel" ]] || continue
         echo "Apagando $LAB_DATA/$rel"
-        docker run --rm -v "$LAB_DATA:/data" alpine rm -rf "/data/$rel" || failed=1
+        engine_data_run -v "$LAB_DATA:/data" docker.io/library/alpine rm -rf "/data/$rel" || failed=1
       done
     done
   fi
@@ -542,12 +557,12 @@ EOF
     echo "Apagando a configuração $BASE/$service"
     # Arquivos criados por containers podem pertencer a outro usuário.
     rm -rf -- "${BASE:?}/$service" 2>/dev/null \
-      || docker run --rm -v "$BASE:/base" alpine rm -rf "/base/$service" \
+      || engine_data_run -v "$BASE:/base" docker.io/library/alpine rm -rf "/base/$service" \
       || failed=1
   done
 
   for other in "${images[@]+"${images[@]}"}"; do
-    if docker image rm "$other" >/dev/null 2>&1; then
+    if engine_image_remove "$other" >/dev/null 2>&1; then
       echo "Imagem removida: $other"
     else
       echo "Imagem mantida (em uso por outro container ou já ausente): $other"
@@ -572,7 +587,7 @@ ollama_command() {
   local mode
   mode="$(sed -n 's/^OLLAMA_MODE=//p' "$BASE/ollama/ollama.env" 2>/dev/null || true)"
   case "$mode" in
-    docker|docker-gpu) lab_container_running ollama && echo "docker exec ollama ollama" ;;
+    docker|docker-gpu) lab_container_running ollama && echo "engine_exec ollama ollama" ;;
     native)
       if command -v ollama >/dev/null 2>&1; then
         echo "ollama"
@@ -588,15 +603,17 @@ action_clean() {
   local ollama models model
 
   printf '\nUso de disco antes:\n'
-  docker system df
+  engine system df
 
   printf '\nRemovendo imagens sem tag (versões antigas substituídas)\n'
-  docker image prune -f | tail -n 1
-  printf '\nRemovendo o cache de build\n'
-  docker builder prune -f | tail -n 1
+  engine image prune -f | tail -n 1
+  if [[ "$LAB_ENGINE" == docker ]]; then
+    printf '\nRemovendo o cache de build\n'
+    engine_build_cache_prune | tail -n 1
+  fi
 
   printf '\nUso de disco depois:\n'
-  docker system df
+  engine system df
   echo "Volumes e imagens de serviços parados não são tocados."
 
   ollama="$(ollama_command)"

@@ -32,9 +32,11 @@ fi
 
 # shellcheck source=../lib/platform.sh
 source "$LIB_DIR/platform.sh"
+source "${LIB_DIR:-$SCRIPT_DIR/../lib}/engine.sh"
 # shellcheck source=../lib/services.sh
 source "$LIB_DIR/services.sh"
-lab_require_docker || exit 1
+engine_load "$BASE" || exit 1
+engine_require || exit 1
 
 service_exists() {
   lab_service_exists "$BASE" "$1"
@@ -52,7 +54,7 @@ if ((${#LAB_CHOICES[@]} == 0)); then
   exit 1
 fi
 
-LAB_MENU_RUNNING="$(docker ps --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
+LAB_MENU_RUNNING="$(engine ps --format '{{.Names}}' 2>/dev/null | tr '\n' ' ' || true)"
 lab_choose_services "iniciar" || exit 1
 
 # Escolhidos + dependências, na ordem de inicialização. Dependências que não
@@ -70,15 +72,12 @@ done
 
 printf "\nIniciando (com dependências): %s\n\n" "${SERVICES[*]}"
 
-if ! docker network inspect infra-network >/dev/null 2>&1; then
-  echo "Criando a rede compartilhada infra-network"
-  docker network create infra-network >/dev/null
-fi
+engine_ensure_network infra-network >/dev/null
 
 lab_check_ssh_agent
 
 STATUS=0
 lab_compose_up "$BASE" "${SERVICES[@]}" || STATUS=$?
 
-docker ps --format 'table {{.Names}}\t{{.Status}}'
+engine ps --format 'table {{.Names}}\t{{.Status}}'
 exit "$STATUS"

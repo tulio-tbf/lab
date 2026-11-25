@@ -13,6 +13,11 @@ elif [[ $# -gt 0 ]]; then
   exit 2
 fi
 
+source "$SCRIPT_DIR/../lib/platform.sh"
+source "$SCRIPT_DIR/../lib/engine.sh"
+engine_load "$BASE" || exit 1
+engine_require || exit 1
+
 SERVICES=(
   traefik
   wordpress-db
@@ -39,5 +44,5 @@ do
 
   echo "Parando $service"
   cd -- "$BASE/$service"
-  docker compose down
+  engine_compose down
 done

@@ -21,6 +21,8 @@ cd ~/docker-shared
 > `/etc/wsl.conf` e que `sudo systemctl start docker` funciona. O Docker
 > Desktop não compartilha automaticamente as imagens desse Engine.
 
+Para uma instalação Podman, consulte o [guia de administração do Podman](GUIA-PODMAN.md).
+
 ## Gerenciar todo o laboratório
 
 Iniciar todos os serviços:

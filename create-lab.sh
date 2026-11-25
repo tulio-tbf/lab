@@ -12,9 +12,12 @@ OLLAMA_URL="${LAB_OLLAMA_URL:-}"
 CHECK_HARDWARE_ONLY=0
 SERVICES_ARG=""
 NETWORK="infra-network"
+REQUESTED_ENGINE="${LAB_ENGINE:-}"
+REQUESTED_HTTP_PORT=""
 
 # shellcheck source=lib/platform.sh
 source "$SCRIPT_DIR/lib/platform.sh"
+source "$SCRIPT_DIR/lib/engine.sh"
 # shellcheck source=lib/hardware.sh
 source "$SCRIPT_DIR/lib/hardware.sh"
 # shellcheck source=lib/services.sh
@@ -29,6 +32,8 @@ Uso: ./create-lab.sh [opções]
   -d, --data DIRETÓRIO   Diretório dos dados persistentes (padrão: ~/lab-data)
   -o, --backups DIRETÓRIO Diretório dos backups (padrão: ~/backups)
   -D, --domain DOMÍNIO   Domínio local dos serviços (padrão: lab.test)
+      --engine ENGINE    docker (padrão) ou podman (Linux rootless)
+      --http-port PORTA  Porta HTTP do Traefik (Docker: 80, Podman: 8000)
       --ollama-mode MODO Onde roda o Ollama: auto (padrão), native, docker,
                          docker-gpu ou remote
       --ollama-url URL   Endereço do Ollama no modo remote, por exemplo
@@ -38,7 +43,8 @@ Uso: ./create-lab.sh [opções]
   -h, --help             Exibe esta ajuda
 
 No modo auto, o script verifica CPU, RAM, GPU e a memória do Docker e escolhe
-se o Ollama roda em container ou nativo no sistema.
+se o Ollama roda em container ou nativo no sistema. Nos dois engines,
+o modo docker do Ollama significa container com CPU.
 
 As opções também podem ser definidas por LAB_BASE, LAB_DATA, LAB_BACKUPS,
 LAB_DOMAIN, LAB_OLLAMA_MODE, LAB_OLLAMA_URL e LAB_LLM_MODEL (modelo padrão).
@@ -66,6 +72,17 @@ while (($#)); do
     -D|--domain)
       [[ $# -ge 2 ]] || { echo "Erro: $1 requer um domínio." >&2; exit 2; }
       DOMAIN="$2"
+      shift 2
+      ;;
+    --engine)
+      [[ $# -ge 2 ]] || { echo "Erro: --engine requer docker ou podman." >&2; exit 2; }
+      engine_validate "$2" || exit 2
+      REQUESTED_ENGINE="$2"
+      shift 2
+      ;;
+    --http-port)
+      [[ $# -ge 2 ]] || { echo "Erro: --http-port requer uma porta." >&2; exit 2; }
+      REQUESTED_HTTP_PORT="$2"
       shift 2
       ;;
     --ollama-mode)
@@ -122,6 +139,67 @@ BASE="$(absolute_path "$BASE")"
 DATA="$(absolute_path "$DATA")"
 BACKUPS="$(absolute_path "$BACKUPS")"
 
+select_engine() {
+  local compose
+  engine_load "$BASE" || exit 2
+  if [[ ! -f "$BASE/lab.env" ]]; then
+    # Instalações anteriores a lab.env também pertencem ao Docker.
+    for compose in "$BASE"/*/docker-compose.yml "$BASE"/ollama/ollama.env; do
+      [[ ! -f "$compose" ]] || break
+    done
+    if [[ ! -f "$compose" ]]; then
+      LAB_ENGINE="${REQUESTED_ENGINE:-docker}"
+    fi
+  fi
+  engine_validate "$LAB_ENGINE" || exit 2
+  if [[ -n "$REQUESTED_ENGINE" && "$REQUESTED_ENGINE" != "$LAB_ENGINE" ]]; then
+    printf 'Erro: %s pertence a uma instalação %s. Use outra base e outro diretório de dados.\n' \
+      "$BASE" "$LAB_ENGINE" >&2
+    exit 2
+  fi
+}
+
+select_engine
+HTTP_PORT=""
+if [[ -f "$BASE/lab.env" ]]; then
+  HTTP_PORT="$(unset LAB_HTTP_PORT; source "$BASE/lab.env"; printf '%s' "${LAB_HTTP_PORT:-}")"
+fi
+if [[ -n "$HTTP_PORT" && -n "$REQUESTED_HTTP_PORT" && "$HTTP_PORT" != "$REQUESTED_HTTP_PORT" ]]; then
+  echo "Erro: a porta HTTP já foi definida nesta instalação ($HTTP_PORT)." >&2
+  exit 2
+fi
+HTTP_PORT="${REQUESTED_HTTP_PORT:-$HTTP_PORT}"
+BIND_LABEL=""
+SHARED_BIND_LABEL=""
+LOCAL_IMAGE_PREFIX=""
+HOST_ALIAS="host.docker.internal"
+HOST_MAPPING=$'    extra_hosts:\n      - host.docker.internal:host-gateway'
+TRAEFIK_SECURITY=""
+N8N_USERNS=""
+if [[ "$LAB_ENGINE" == podman ]]; then
+  HTTP_PORT="${HTTP_PORT:-8000}"
+  BIND_LABEL=":Z"
+  SHARED_BIND_LABEL=",z"
+  LOCAL_IMAGE_PREFIX="localhost/"
+  HOST_ALIAS="host.containers.internal"
+  HOST_MAPPING=""
+  TRAEFIK_SECURITY=$'    security_opt:\n      - label=disable'
+  N8N_USERNS='    userns_mode: "keep-id:uid=1000,gid=1000"'
+  ALL_SERVICES=()
+  for service in "${LAB_ALL_SERVICES[@]}"; do
+    [[ "$service" == portainer ]] || ALL_SERVICES+=("$service")
+  done
+else
+  HTTP_PORT="${HTTP_PORT:-80}"
+fi
+if [[ ! "$HTTP_PORT" =~ ^[1-9][0-9]{0,4}$ ]] || ((HTTP_PORT > 65535)); then
+  echo "Erro: porta HTTP inválida: $HTTP_PORT" >&2
+  exit 2
+fi
+HTTP_SUFFIX=""
+[[ "$HTTP_PORT" == 80 ]] || HTTP_SUFFIX=":$HTTP_PORT"
+
+
 DOMAIN="$(echo "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
 if [[ ! "$DOMAIN" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?(\.[a-z0-9]([a-z0-9-]*[a-z0-9])?)+$ ]]; then
   echo "Erro: domínio inválido: $DOMAIN" >&2
@@ -161,6 +239,10 @@ if ((CHECK_HARDWARE_ONLY)); then
   lab_hw_report "$OLLAMA_MODE" "$(services_memory_mb "${ALL_SERVICES[@]}")" 1
   echo "Estimativa considerando todos os serviços do lab."
   exit 0
+fi
+engine_require || exit 1
+if [[ "$LAB_ENGINE" == podman ]]; then
+  echo "Portainer indisponível nesta configuração. Use a CLI do Podman para administração."
 fi
 SSH_AGENT_MOUNT="$(lab_ssh_agent_mount_source):/run/host-ssh-agent"
 
@@ -221,6 +303,10 @@ lab_hw_detect "$DATA"
 lab_hw_report "$OLLAMA_MODE" "$(services_memory_mb "${CREATED_SERVICES[@]}")" "$WANTS_OLLAMA"
 
 if ((WANTS_OLLAMA)); then
+  if [[ "$LAB_ENGINE" == podman && "$HW_OLLAMA_MODE" == docker-gpu ]]; then
+    echo "Erro: o modo de GPU em container está disponível apenas com Docker. Use native, remote ou docker com Podman." >&2
+    exit 2
+  fi
   OLLAMA_MODE="$HW_OLLAMA_MODE"
   LLM_MODEL="$HW_LLM_MODEL"
   if [[ "$OLLAMA_MODE" == "docker-gpu" ]] && ((!HW_DOCKER_GPU)); then
@@ -229,7 +315,7 @@ if ((WANTS_OLLAMA)); then
   fi
   case "$OLLAMA_MODE" in
     docker|docker-gpu) OLLAMA_URL="http://ollama:11434" ;;
-    native) OLLAMA_URL="http://host.docker.internal:11434" ;;
+    native) OLLAMA_URL="http://$HOST_ALIAS:11434" ;;
   esac
 fi
 
@@ -241,9 +327,48 @@ if ((HW_WARNINGS)); then
   esac
 fi
 
+if should_create_service traefik && [[ "$LAB_ENGINE" == podman ]]; then
+  read -r port_floor < /proc/sys/net/ipv4/ip_unprivileged_port_start
+  if ((HTTP_PORT < port_floor)); then
+    printf 'Erro: a porta %s requer privilégios. Use --http-port com valor a partir de %s.\n' "$HTTP_PORT" "$port_floor" >&2
+    exit 1
+  fi
+  engine_require_socket || exit 1
+fi
+
+INSTALL_LOCK="$BASE/.lab-install-lock"
+if ! mkdir -- "$INSTALL_LOCK"; then
+  echo "Erro: já existe uma instalação em andamento em $BASE." >&2
+  exit 1
+fi
+trap 'rm -f -- "$INSTALL_LOCK/lab.env"; rmdir -- "$INSTALL_LOCK"' EXIT
+# Confira a escolha de novo após adquirir a trava da instalação.
+# A seleção explícita impede que uma instalação criada durante o menu seja adotada.
+REQUESTED_ENGINE="$LAB_ENGINE"
+select_engine
+if [[ -f "$BASE/lab.env" ]]; then
+  SAVED_HTTP_PORT="$(unset LAB_HTTP_PORT; source "$BASE/lab.env"; printf '%s' "${LAB_HTTP_PORT:-80}")"
+  if [[ "$HTTP_PORT" != "$SAVED_HTTP_PORT" ]]; then
+    echo "Erro: a instalação já está configurada para a porta $SAVED_HTTP_PORT." >&2
+    exit 2
+  fi
+fi
+
+DATA_ENGINE_FILE="$DATA/.lab-engine"
+if [[ ! -f "$DATA_ENGINE_FILE" ]]; then
+  if [[ "$LAB_ENGINE" == podman && -n "$(find "$DATA" -mindepth 1 -maxdepth 1 -print -quit)" ]]; then
+    echo "Erro: use um diretório de dados vazio para uma nova instalação Podman." >&2
+    exit 2
+  fi
+  (set -o noclobber; printf '%s\n' "$LAB_ENGINE" > "$DATA_ENGINE_FILE") 2>/dev/null || true
+fi
+if ! read -r DATA_ENGINE < "$DATA_ENGINE_FILE" || [[ "$DATA_ENGINE" != "$LAB_ENGINE" ]]; then
+  printf 'Erro: %s não está associado ao engine %s. Use outro diretório de dados.\n' "$DATA" "$LAB_ENGINE" >&2
+  exit 2
+fi
+
 mkdir -p "$BASE/scripts" "$BASE/networks" "$BASE/certificates" "$BASE/templates"
-cp -- "$SCRIPT_DIR/lib/platform.sh" "$BASE/scripts/platform.sh"
-cp -- "$SCRIPT_DIR/lib/services.sh" "$BASE/scripts/services.sh"
+cp -- "$SCRIPT_DIR/lib/"{platform,engine,services}.sh "$BASE/scripts/"
 for helper in start-custom.sh update-lab.sh; do
   cp -- "$SCRIPT_DIR/script/$helper" "$BASE/scripts/$helper"
   chmod +x "$BASE/scripts/$helper"
@@ -251,13 +376,16 @@ done
 
 # Caminhos usados pelos scripts gerados (update-lab.sh precisa deles para
 # backups e para chamar este instalador ao adicionar serviços).
-cat > "$BASE/lab.env" <<EOF_LAB_ENV
+cat > "$INSTALL_LOCK/lab.env" <<EOF_LAB_ENV
 # Gerado por create-lab.sh.
+LAB_ENGINE=$LAB_ENGINE
+LAB_HTTP_PORT=$HTTP_PORT
 LAB_DATA=$(printf '%q' "$DATA")
 LAB_BACKUPS=$(printf '%q' "$BACKUPS")
 LAB_DOMAIN=$(printf '%q' "$DOMAIN")
 LAB_REPO=$(printf '%q' "$SCRIPT_DIR")
 EOF_LAB_ENV
+mv -f -- "$INSTALL_LOCK/lab.env" "$BASE/lab.env"
 mkdir -p "$BACKUPS/databases" "$BACKUPS/volumes" "$BACKUPS/projects"
 
 if should_create_service "traefik"; then
@@ -271,6 +399,12 @@ if should_create_service "wordpress" || should_create_service "wordpress-db"; th
   if [[ ! -f "$WORDPRESS_DB_PASSWORD_FILE" ]]; then
     printf '%s' 'wordpress123' > "$WORDPRESS_DB_PASSWORD_FILE"
     chmod 600 "$WORDPRESS_DB_PASSWORD_FILE" 2>/dev/null || true
+  fi
+  if [[ "$LAB_ENGINE" == podman ]]; then
+    # O PHP lê o arquivo como www-data no container. O diretório no host
+    # restringe o acesso ao usuário que instalou o Lab.
+    chmod 700 "$DATA/wordpress/secrets"
+    chmod 644 "$WORDPRESS_DB_PASSWORD_FILE"
   fi
 fi
 
@@ -351,8 +485,7 @@ if should_create_service "searxng"; then
   mkdir -p "$BASE/searxng/config"
 fi
 
-lab_require_docker || exit 1
-docker network inspect "$NETWORK" >/dev/null 2>&1 || docker network create "$NETWORK"
+engine_ensure_network "$NETWORK"
 
 #############################################
 # TRAEFIK
@@ -362,23 +495,25 @@ if should_create_service "traefik"; then
 cat > "$BASE/traefik/docker-compose.yml" <<EOF_TRAEFIK
 services:
   traefik:
-    image: traefik:v3
+    image: docker.io/library/traefik:v3
     container_name: traefik
     restart: unless-stopped
 
     command:
       - --providers.docker=true
       - --providers.docker.exposedbydefault=false
+      - --providers.docker.network=$NETWORK
       - --entrypoints.web.address=:80
       - --api.dashboard=true
       - --api.insecure=true
 
     ports:
-      - "80:80"
+      - "$HTTP_PORT:80"
       - "8088:8080"
 
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - $(yaml_path "$(engine_socket):/var/run/docker.sock:ro")
+$TRAEFIK_SECURITY
 
     labels:
       - traefik.enable=true
@@ -386,8 +521,8 @@ services:
       - traefik.http.routers.traefik.entrypoints=web
       - traefik.http.routers.traefik.service=api@internal
       - traefik.http.routers.traefik.middlewares=dashboard
-      - traefik.http.middlewares.dashboard.redirectregex.regex=^http://traefik\\.${DOMAIN_REGEX}/?\$
-      - traefik.http.middlewares.dashboard.redirectregex.replacement=http://traefik.${DOMAIN}/dashboard/
+      - traefik.http.middlewares.dashboard.redirectregex.regex=^http://traefik\\.${DOMAIN_REGEX}${HTTP_SUFFIX}/?\$
+      - traefik.http.middlewares.dashboard.redirectregex.replacement=http://traefik.${DOMAIN}${HTTP_SUFFIX}/dashboard/
 
     networks:
       - infra
@@ -407,7 +542,7 @@ if should_create_service "wordpress-db"; then
 cat > "$BASE/wordpress-db/docker-compose.yml" <<EOF_WORDPRESS_DB
 services:
   wordpress-db:
-    image: mysql:8
+    image: docker.io/library/mysql:8
     container_name: wordpress-db
 
     restart: unless-stopped
@@ -420,7 +555,7 @@ services:
 
     volumes:
       - wordpress-db-data:/var/lib/mysql
-      - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
+      - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro${SHARED_BIND_LABEL}")
 
     networks:
       - infra
@@ -442,7 +577,7 @@ fi
 
 if should_create_service "wordpress"; then
 cat > "$BASE/wordpress/Dockerfile" <<'EOF_WORDPRESS_DOCKERFILE'
-FROM wordpress:latest
+FROM docker.io/library/wordpress:latest
 
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl git openssh-client \
@@ -454,7 +589,7 @@ EOF_WORDPRESS_DOCKERFILE
 cat > "$BASE/wordpress/docker-compose.yml" <<EOF_WORDPRESS
 services:
   wordpress:
-    image: wordpress-lab:latest
+    image: ${LOCAL_IMAGE_PREFIX}wordpress-lab:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -473,8 +608,8 @@ services:
 
     volumes:
       - ${SSH_AGENT_MOUNT}
-      - $(yaml_path "$DATA/wordpress/files:/var/www/html/")
-      - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro")
+      - $(yaml_path "$DATA/wordpress/files:/var/www/html/${BIND_LABEL}")
+      - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro${SHARED_BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -501,7 +636,7 @@ if should_create_service "mautic-db"; then
 cat > "$BASE/mautic-db/docker-compose.yml" <<EOF_MAUTIC_DB
 services:
   mautic-db:
-    image: mariadb:11
+    image: docker.io/library/mariadb:11
 
     container_name: mautic-db
 
@@ -536,7 +671,7 @@ fi
 
 if should_create_service "mautic"; then
 cat > "$BASE/mautic/Dockerfile" <<'EOF_MAUTIC_DOCKERFILE'
-FROM mautic/mautic:7.1.2-apache
+FROM docker.io/mautic/mautic:7.1.2-apache
 
 USER root
 RUN apt-get update \
@@ -547,7 +682,7 @@ EOF_MAUTIC_DOCKERFILE
 cat > "$BASE/mautic/docker-compose.yml" <<EOF_MAUTIC
 services:
   mautic:
-    image: mautic-lab:latest
+    image: ${LOCAL_IMAGE_PREFIX}mautic-lab:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -604,7 +739,7 @@ if should_create_service "n8n"; then
 cat > "$BASE/n8n/docker-compose.yml" <<EOF_N8N
 services:
   n8n:
-    image: n8nio/n8n:latest
+    image: docker.io/n8nio/n8n:latest
 
     container_name: n8n
 
@@ -615,18 +750,16 @@ services:
       N8N_HOST: n8n.${DOMAIN}
       N8N_PROTOCOL: http
       N8N_SECURE_COOKIE: "false"
-      WEBHOOK_URL: http://n8n.${DOMAIN}/
+      WEBHOOK_URL: http://n8n.${DOMAIN}${HTTP_SUFFIX}/
       N8N_RESTRICT_FILE_ACCESS_TO: /data/arquivos
 
-    # Permite acessar serviços do hospedeiro, como o Ollama nativo, em
-    # http://host.docker.internal:11434 também no Docker Engine do Linux/WSL.
-    extra_hosts:
-      - host.docker.internal:host-gateway
+$HOST_MAPPING
+$N8N_USERNS
 
     volumes:
       - ${SSH_AGENT_MOUNT}
-      - $(yaml_path "$DATA/n8n/data:/home/node/")
-      - $(yaml_path "$DATA/n8n/arquivos:/data/arquivos")
+      - $(yaml_path "$DATA/n8n/data:/home/node/${BIND_LABEL}")
+      - $(yaml_path "$DATA/n8n/arquivos:/data/arquivos${BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -651,19 +784,21 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 cd -- "$SCRIPT_DIR"
 
 source "$SCRIPT_DIR/../scripts/platform.sh"
-lab_require_docker || exit 1
+source "$SCRIPT_DIR/../scripts/engine.sh"
+engine_load "$SCRIPT_DIR/.." || exit 1
+engine_require || exit 1
 lab_check_ssh_agent "no n8n"
 
 echo "Baixando a imagem atual do n8n..."
-if ! docker compose pull; then
+if ! engine_compose pull; then
   echo "Erro: a imagem não foi baixada; o container não será recriado." >&2
-  echo "Verifique a conectividade IPv4/DNS do Docker Engine e tente novamente." >&2
+  echo "Verifique a conectividade IPv4/DNS do engine e tente novamente." >&2
   exit 1
 fi
 
 echo "Recriando o container n8n..."
-docker compose up -d --force-recreate
-docker exec n8n n8n --version
+engine_compose up -d --force-recreate
+engine_exec n8n n8n --version
 EOF_N8N_UPDATE
   chmod +x "$BASE/n8n/update.sh"
 fi
@@ -676,14 +811,14 @@ if should_create_service "redis"; then
 cat > "$BASE/redis/docker-compose.yml" <<EOF_REDIS
 services:
   redis:
-    image: redis:latest
+    image: docker.io/library/redis:latest
 
     container_name: redis
 
     restart: unless-stopped
 
     volumes:
-      - $(yaml_path "$DATA/redis:/data")
+      - $(yaml_path "$DATA/redis:/data${BIND_LABEL}")
 
     networks:
       - infra
@@ -703,7 +838,7 @@ if should_create_service "minio"; then
 cat > "$BASE/minio/docker-compose.yml" <<EOF_MINIO
 services:
   minio:
-    image: minio/minio
+    image: docker.io/minio/minio
 
     container_name: minio
 
@@ -714,7 +849,7 @@ services:
       MINIO_ROOT_PASSWORD: admin123
 
     volumes:
-      - $(yaml_path "$DATA/minio:/data")
+      - $(yaml_path "$DATA/minio:/data${BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -742,15 +877,15 @@ if should_create_service "portainer"; then
 cat > "$BASE/portainer/docker-compose.yml" <<EOF_PORTAINER
 services:
   portainer:
-    image: portainer/portainer-ce:latest
+    image: docker.io/portainer/portainer-ce:latest
 
     container_name: portainer
 
     restart: unless-stopped
 
     volumes:
-      - /var/run/docker.sock:/var/run/docker.sock
-      - $(yaml_path "$DATA/portainer:/data")
+      - $(yaml_path "$(engine_socket):/var/run/docker.sock")
+      - $(yaml_path "$DATA/portainer:/data${BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -780,7 +915,7 @@ services:
   mailhog:
     # Mailpit substitui o MailHog (abandonado e sem imagem arm64) mantendo o
     # nome mailhog e as portas, para não quebrar o SMTP já configurado nas apps.
-    image: axllent/mailpit:latest
+    image: docker.io/axllent/mailpit:latest
 
     container_name: mailhog
 
@@ -817,7 +952,7 @@ if should_create_service "adminer"; then
 cat > "$BASE/adminer/docker-compose.yml" <<EOF_ADMINER
 services:
   adminer:
-    image: adminer
+    image: docker.io/library/adminer
 
     container_name: adminer
 
@@ -846,7 +981,7 @@ if should_create_service "pgadmin"; then
 cat > "$BASE/pgadmin/docker-compose.yml" <<EOF_PGADMIN
 services:
   pgadmin:
-    image: dpage/pgadmin4
+    image: docker.io/dpage/pgadmin4
 
     container_name: pgadmin
 
@@ -886,7 +1021,7 @@ if should_create_service "evolution-db"; then
 cat > "$BASE/evolution-db/docker-compose.yml" <<EOF_EVOLUTION_DB
 services:
   evolution-db:
-    image: postgres:16-alpine
+    image: docker.io/library/postgres:16-alpine
     container_name: evolution-db
     restart: unless-stopped
 
@@ -925,7 +1060,7 @@ fi
 
 if should_create_service "evolution-api"; then
 cat > "$BASE/evolution-api/Dockerfile" <<'EOF_EVOLUTION_DOCKERFILE'
-FROM evoapicloud/evolution-api:v2.3.7
+FROM docker.io/evoapicloud/evolution-api:v2.3.7
 
 USER root
 RUN apk add --no-cache git openssh-client
@@ -934,7 +1069,7 @@ EOF_EVOLUTION_DOCKERFILE
 cat > "$BASE/evolution-api/docker-compose.yml" <<EOF_EVOLUTION_API
 services:
   evolution-api:
-    image: evolution-api-lab:latest
+    image: ${LOCAL_IMAGE_PREFIX}evolution-api-lab:latest
     build:
       context: .
       dockerfile: Dockerfile
@@ -948,7 +1083,7 @@ services:
     environment:
       SSH_AUTH_SOCK: /run/host-ssh-agent
       AUTHENTICATION_API_KEY: change-me
-      SERVER_URL: http://evolution-api.${DOMAIN}
+      SERVER_URL: http://evolution-api.${DOMAIN}${HTTP_SUFFIX}
       SERVER_DISABLE_MANAGER: "false"
       NODE_OPTIONS: --dns-result-order=ipv4first
       DATABASE_ENABLED: "true"
@@ -971,7 +1106,7 @@ services:
 
     volumes:
       - ${SSH_AGENT_MOUNT}
-      - $(yaml_path "$DATA/evolution-api:/evolution/instances")
+      - $(yaml_path "$DATA/evolution-api:/evolution/instances${BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -1015,7 +1150,7 @@ if should_create_service "ollama"; then
 cat > "$BASE/ollama/docker-compose.yml" <<EOF_OLLAMA
 services:
   ollama:
-    image: ollama/ollama:latest
+    image: docker.io/ollama/ollama:latest
 
     container_name: ollama
 
@@ -1030,7 +1165,7 @@ services:
       OLLAMA_NUM_PARALLEL: "1"
 
     volumes:
-      - $(yaml_path "$DATA/ollama:/root/.ollama")
+      - $(yaml_path "$DATA/ollama:/root/.ollama${BIND_LABEL}")
 ${OLLAMA_GPU_BLOCK}
     networks:
       - infra
@@ -1099,6 +1234,8 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=/dev/null
 source "$SCRIPT_DIR/ollama.env"
+source "$SCRIPT_DIR/../scripts/engine.sh"
+engine_load "$SCRIPT_DIR/.." || exit 1
 
 if (($#)); then
   MODELS=("$@")
@@ -1113,7 +1250,7 @@ pull() {
   echo "Baixando $model ($OLLAMA_MODE)..."
   case "$OLLAMA_MODE" in
     docker|docker-gpu)
-      docker exec ollama ollama pull "$model"
+      engine_exec ollama ollama pull "$model"
       return
       ;;
     native)
@@ -1153,16 +1290,16 @@ if should_create_service "qdrant"; then
 cat > "$BASE/qdrant/docker-compose.yml" <<EOF_QDRANT
 services:
   qdrant:
-    image: qdrant/qdrant:latest
+    image: docker.io/qdrant/qdrant:latest
 
     container_name: qdrant
 
     restart: unless-stopped
 
     # API REST em http://qdrant:6333 dentro da rede; painel em
-    # http://qdrant.${DOMAIN}/dashboard
+    # http://qdrant.${DOMAIN}${HTTP_SUFFIX}/dashboard
     volumes:
-      - $(yaml_path "$DATA/qdrant:/qdrant/storage")
+      - $(yaml_path "$DATA/qdrant:/qdrant/storage${BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -1198,11 +1335,10 @@ services:
     environment:
       OLLAMA_BASE_URL: ${OLLAMA_URL}
 
-    extra_hosts:
-      - host.docker.internal:host-gateway
+$HOST_MAPPING
 
     volumes:
-      - $(yaml_path "$DATA/open-webui:/app/backend/data")
+      - $(yaml_path "$DATA/open-webui:/app/backend/data${BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -1247,17 +1383,17 @@ EOF_SEARXNG_SETTINGS
 cat > "$BASE/searxng/docker-compose.yml" <<EOF_SEARXNG
 services:
   searxng:
-    image: searxng/searxng:latest
+    image: docker.io/searxng/searxng:latest
 
     container_name: searxng
 
     restart: unless-stopped
 
     environment:
-      SEARXNG_BASE_URL: http://searxng.${DOMAIN}/
+      SEARXNG_BASE_URL: http://searxng.${DOMAIN}${HTTP_SUFFIX}/
 
     volumes:
-      - $(yaml_path "$BASE/searxng/config:/etc/searxng")
+      - $(yaml_path "$BASE/searxng/config:/etc/searxng${BIND_LABEL}")
 
     labels:
       - traefik.enable=true
@@ -1303,12 +1439,11 @@ if [[ ! -d "$BASE" ]]; then
 fi
 
 source "$SCRIPT_DIR/platform.sh"
-lab_require_docker || exit 1
+source "$SCRIPT_DIR/engine.sh"
+engine_load "$BASE" || exit 1
+engine_require || exit 1
 
-if ! docker network inspect infra-network >/dev/null 2>&1; then
-  echo "Criando a rede compartilhada infra-network"
-  docker network create infra-network >/dev/null
-fi
+engine_ensure_network infra-network >/dev/null
 
 lab_check_ssh_agent
 
@@ -1329,7 +1464,7 @@ do
   # Serviços que rodam fora do Docker (Ollama nativo ou remoto) deixam um
   # aviso com instruções no lugar do docker-compose.yml.
   if [[ -f "$BASE/$service/EXTERNAL.txt" ]]; then
-    echo "$service roda fora do Docker:"
+    echo "$service roda fora do engine:"
     sed 's/^/  /' "$BASE/$service/EXTERNAL.txt"
     continue
   fi
@@ -1340,12 +1475,12 @@ do
   fi
 
   echo "Subindo $service"
-  if ! (cd -- "$BASE/$service" && docker compose up -d --build); then
+  if ! (cd -- "$BASE/$service" && engine_compose up -d --build); then
     FAILED_SERVICES+=("$service")
   fi
 done
 
-docker ps
+engine ps
 
 if ((${#FAILED_SERVICES[@]})); then
   printf 'Erro: falha ao subir os seguintes serviços: %s\n' "${FAILED_SERVICES[*]}" >&2
@@ -1387,7 +1522,9 @@ if [[ ! -d "$BASE" ]]; then
 fi
 
 source "$SCRIPT_DIR/platform.sh"
-lab_require_docker || exit 1
+source "$SCRIPT_DIR/engine.sh"
+engine_load "$BASE" || exit 1
+engine_require || exit 1
 
 SERVICES=(
 EOF_STOP
@@ -1407,7 +1544,7 @@ do
   fi
 
   echo "Parando $service"
-  if ! (cd -- "$BASE/$service" && docker compose down); then
+  if ! (cd -- "$BASE/$service" && engine_compose down); then
     FAILED_SERVICES+=("$service")
   fi
 done
@@ -1625,7 +1762,7 @@ $encoding = [System.Text.UTF8Encoding]::new($false)
 Write-Output 'Hosts do Windows atualizados.'
 EOF_WINDOWS_HOSTS
 
-printf "\nInfraestrutura criada com sucesso.\n"
+printf "\nInfraestrutura criada com %s.\n" "$LAB_ENGINE"
 printf "\nConfigurações: %s\nDados persistentes: %s\nBackups: %s\n" "$BASE" "$DATA" "$BACKUPS"
 if [[ "$(lab_platform)" == "wsl" ]]; then
   printf "\nPara atualizar os hosts do WSL e do Windows, execute:\n"
