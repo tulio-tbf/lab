@@ -189,7 +189,7 @@ automaticamente.
 Na raiz do repositório:
 
 ```bash
-git clone <URL-DO-REPOSITORIO> lab
+git clone https://github.com/tulio-tbf/lab.git lab
 cd lab
 chmod +x create-lab.sh
 ./create-lab.sh
@@ -855,3 +855,8 @@ Para escolher como remover um serviço:
 ```bash
 ~/docker-shared/scripts/update-lab.sh remover
 ```
+
+## Contribuições
+
+Veja o [guia de contribuição](CONTRIBUTING.md) para relatar bugs, enviar
+resultados de testes ou propor serviços. O projeto usa a [licença MIT](LICENSE).
