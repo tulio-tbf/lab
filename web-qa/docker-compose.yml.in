@@ -1,0 +1,39 @@
+services:
+  web-qa:
+    image: @IMAGE_PREFIX@lab-web-qa:local
+    build: .
+    container_name: web-qa
+    restart: unless-stopped
+    init: true
+    user: "@USER@"
+    # @USERNS@
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    shm_size: 1gb
+    environment:
+      HOME: /tmp
+      QA_DOMAIN: "@DOMAIN@"
+      QA_TRAEFIK_PORT: "@HTTP_PORT@"
+      QA_ARTIFACTS: /artifacts
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - @ARTIFACTS_MOUNT@
+    extra_hosts:
+      - "wordpress.@DOMAIN@:host-gateway"
+      - "mautic.@DOMAIN@:host-gateway"
+      - "n8n.@DOMAIN@:host-gateway"
+    healthcheck:
+      test: ["CMD", "node", "-e", "const s=require('node:net').connect(3000,'127.0.0.1',()=>s.end());s.on('error',()=>process.exit(1))"]
+      interval: 15s
+      timeout: 3s
+      retries: 3
+    networks:
+      - infra
+
+networks:
+  infra:
+    external: true
+    name: infra-network

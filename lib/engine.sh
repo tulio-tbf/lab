@@ -64,6 +64,61 @@ engine_compose() (
   engine compose "$@"
 )
 
+engine_compose_up_retry() {
+  local attempts="${LAB_COMPOSE_UP_ATTEMPTS:-3}"
+  local attempt=1
+  local image dockerfile line pull_attempt
+
+  if ((attempts < 1)); then
+    attempts=1
+  fi
+
+  # Resolver o DNS e a autenticação da imagem base antes do BuildKit evita
+  # repetir a compilação inteira quando o registry está temporariamente inacessível.
+  while IFS= read -r dockerfile; do
+    [[ -f "$dockerfile" ]] || continue
+    while IFS= read -r line; do
+      line="${line#FROM }"
+      while [[ "$line" == --platform=* || "$line" == "--platform "* ]]; do
+        line="${line#* }"
+      done
+      line="${line%% *}"
+      [[ -n "$line" && "$line" != scratch && "$line" != *'$'* ]] || continue
+      image="$line"
+      if [[ "$image" != */* ]]; then
+        image="docker.io/library/$image"
+      elif [[ "$image" != *.*/* && "$image" != localhost/* ]]; then
+        image="docker.io/$image"
+      fi
+      pull_attempt=1
+      while ((pull_attempt <= attempts)); do
+        if engine pull "$image" >/dev/null 2>&1; then
+          break
+        fi
+        ((pull_attempt++))
+        if ((pull_attempt <= attempts)); then
+          sleep 5
+        fi
+      done
+    done < <(grep -i '^FROM[[:space:]]' "$dockerfile" 2>/dev/null || true)
+  done < <(find . -maxdepth 2 -type f -name Dockerfile -print 2>/dev/null)
+
+  while ((attempt <= attempts)); do
+    if ((attempt > 1)); then
+      echo "Nova tentativa de subir os serviços ($attempt/$attempts)..."
+    fi
+    if engine_compose up -d --build "$@"; then
+      return 0
+    fi
+    ((attempt++))
+    if ((attempt <= attempts)); then
+      sleep 5
+    fi
+  done
+
+  return 1
+}
+
 engine_compose_images() {
   if [[ "$LAB_ENGINE" == podman ]]; then
     # Cada projeto gerado pelo Lab declara uma imagem explícita por serviço.

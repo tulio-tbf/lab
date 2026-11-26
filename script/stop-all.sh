@@ -23,7 +23,6 @@ SERVICES=(
   wordpress-db
   mautic-db
   redis
-  minio
   wordpress
   mautic
   n8n
@@ -33,6 +32,7 @@ SERVICES=(
   mailhog
   evolution-db
   evolution-api
+  web-qa
 )
 
 for service in "${SERVICES[@]}"

@@ -28,6 +28,7 @@ lab_service_memory_mb() {
     qdrant) echo 512 ;;
     open-webui) echo 768 ;;
     searxng) echo 256 ;;
+    web-qa) echo 768 ;;
     # O consumo do Ollama depende do modelo e é somado à parte.
     ollama) echo 256 ;;
     *) echo 128 ;;

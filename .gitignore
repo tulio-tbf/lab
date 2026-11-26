@@ -1,1 +1,17 @@
 docker/*
+lab-data/*
+backups/*
+
+.env
+.env.*
+*.env
+!lab.env.example
+
+/web-qa/node_modules/
+/web-qa-artifacts/
+
+.vscode/
+.DS_Store
+Thumbs.db
+*.log
+*.tmp

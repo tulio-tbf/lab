@@ -4,18 +4,18 @@
 # mapfile ou namerefs).
 
 # Ordem de criação.
-LAB_ALL_SERVICES=(traefik wordpress wordpress-db mautic mautic-db n8n redis minio portainer adminer pgadmin mailhog evolution-db evolution-api ollama qdrant open-webui searxng)
+LAB_ALL_SERVICES=(traefik wordpress wordpress-db mautic mautic-db n8n redis minio portainer adminer pgadmin mailhog evolution-db evolution-api ollama qdrant open-webui searxng web-qa)
 LAB_AI_SERVICES=(ollama qdrant open-webui searxng)
 
 # Ordem de inicialização: bancos e infraestrutura antes das aplicações. O
 # minio fica de fora (imagem configurada indisponível; veja start-all.sh).
-LAB_START_ORDER=(traefik wordpress-db mautic-db redis wordpress mautic n8n portainer adminer pgadmin mailhog evolution-db evolution-api ollama qdrant searxng open-webui)
+LAB_START_ORDER=(traefik wordpress-db mautic-db redis wordpress mautic n8n portainer adminer pgadmin mailhog evolution-db evolution-api ollama qdrant searxng open-webui web-qa)
 
 lab_service_dependencies() {
   case "$1" in
     wordpress) echo "wordpress-db traefik" ;;
     mautic) echo "mautic-db traefik" ;;
-    n8n|minio|portainer|adminer|pgadmin|mailhog|qdrant|searxng) echo "traefik" ;;
+    n8n|web-qa|minio|portainer|adminer|pgadmin|mailhog|qdrant|searxng) echo "traefik" ;;
     evolution-api) echo "evolution-db redis traefik" ;;
     open-webui) echo "ollama traefik" ;;
   esac
@@ -259,7 +259,7 @@ lab_strong_dependencies() {
 # Diretórios em DATA e volumes nomeados de cada serviço.
 lab_service_data_dirs() {
   case "$1" in
-    wordpress|n8n|redis|minio|portainer|pgadmin|evolution-api|ollama|open-webui|qdrant) echo "$1" ;;
+    wordpress|n8n|redis|minio|portainer|pgadmin|evolution-api|ollama|open-webui|qdrant|web-qa) echo "$1" ;;
   esac
 }
 
@@ -310,7 +310,7 @@ lab_compose_up() {
     [[ -f "$base/$service/docker-compose.yml" ]] || continue
 
     echo "Subindo $service"
-    if ! (cd -- "$base/$service" && engine_compose up -d --build); then
+    if ! (cd -- "$base/$service" && engine_compose_up_retry); then
       failed+=("$service")
     fi
   done

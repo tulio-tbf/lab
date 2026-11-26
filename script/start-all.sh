@@ -27,7 +27,6 @@ SERVICES=(
   wordpress-db
   mautic-db
   redis
-  minio
   wordpress
   mautic
   n8n
@@ -37,6 +36,7 @@ SERVICES=(
   mailhog
   evolution-db
   evolution-api
+  web-qa
   ollama
   qdrant
   searxng
@@ -59,7 +59,7 @@ do
   fi
 
   echo "Subindo $service"
-  if ! (cd -- "$BASE/$service" && engine_compose up -d --build); then
+  if ! (cd -- "$BASE/$service" && engine_compose_up_retry); then
     FAILED_SERVICES+=("$service")
   fi
 done

@@ -179,10 +179,28 @@ não compartilham automaticamente imagens, containers nem volumes.
 | Qdrant | Banco vetorial para RAG e memória | Traefik |
 | Open WebUI | Interface web de chat para Ollama | Traefik + Ollama |
 | SearXNG | Busca web para agentes e aplicações | Traefik |
+| Web QA | Playwright Server remoto e automação visual | Traefik |
 
 Os bancos nomeados como `*-db` ficam fora do menu principal. Ao selecionar
 WordPress, Mautic ou Evolution API, seus bancos e dependências são incluídos
 automaticamente.
+
+## QA visual e automação web
+
+O serviço `web-qa` usa a imagem oficial Microsoft Playwright na `infra-network`. Ele centraliza o browser e expõe o protocolo Playwright para MCP e testes E2E no DevContainer. WordPress, Mautic e n8n são acessados pelas rotas existentes do Traefik; screenshots e vídeos ficam em `DATA/web-qa/artifacts`.
+
+Com os serviços de destino iniciados e os caminhos padrão do lab, execute:
+
+```bash
+./create-lab.sh --services web-qa
+cd ~/docker-shared/web-qa
+docker compose up -d --build --wait
+docker compose exec -T web-qa node examples/wordpress-screenshot.mjs
+docker compose exec -T web-qa node examples/n8n-availability.mjs
+docker compose exec -T web-qa node examples/mautic-availability.mjs
+```
+
+O DevContainer conectado à `infra-network` usa o servidor MCP configurado em [`.vscode/mcp.json`](.vscode/mcp.json), sem instalar browsers no projeto. O [guia de Web QA](web-qa/README.md) explica a conexão, a gravação de vídeos, os exemplos de responsividade e a comparação com Browserless.
 
 ## Instalação rápida
 
@@ -620,6 +638,7 @@ Dados importantes que ficam em `DATA`:
 ~/lab-data/ollama
 ~/lab-data/qdrant
 ~/lab-data/open-webui
+~/lab-data/web-qa
 ```
 
 Não sincronize `lab-data`, volumes Docker ou backups em Dropbox, OneDrive,

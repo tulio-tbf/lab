@@ -244,7 +244,11 @@ engine_require || exit 1
 if [[ "$LAB_ENGINE" == podman ]]; then
   echo "Portainer indisponível nesta configuração. Use a CLI do Podman para administração."
 fi
-SSH_AGENT_MOUNT="$(lab_ssh_agent_mount_source):/run/host-ssh-agent"
+SSH_AGENT_SOURCE="$(lab_ssh_agent_mount_source)"
+SSH_AGENT_MOUNT=""
+if [[ -n "$SSH_AGENT_SOURCE" ]]; then
+  SSH_AGENT_MOUNT="      - $(yaml_path "$SSH_AGENT_SOURCE:/run/host-ssh-agent")"
+fi
 
 yaml_path() {
   # Aspas simples tornam seguros espaços, dois-pontos e caracteres especiais.
@@ -607,7 +611,7 @@ services:
       WORDPRESS_ENVIRONMENT_TYPE: local
 
     volumes:
-      - ${SSH_AGENT_MOUNT}
+$SSH_AGENT_MOUNT
       - $(yaml_path "$DATA/wordpress/files:/var/www/html/${BIND_LABEL}")
       - $(yaml_path "$DATA/wordpress/secrets/db_password:/run/secrets/wordpress_db_password:ro${SHARED_BIND_LABEL}")
 
@@ -700,7 +704,7 @@ services:
       MAUTIC_DB_DATABASE: mautic
 
     volumes:
-      - ${SSH_AGENT_MOUNT}
+$SSH_AGENT_MOUNT
       - mautic-config-data:/var/www/html/config
       - mautic-media-files-data:/var/www/html/docroot/media/files
       - mautic-media-images-data:/var/www/html/docroot/media/images
@@ -757,7 +761,7 @@ $HOST_MAPPING
 $N8N_USERNS
 
     volumes:
-      - ${SSH_AGENT_MOUNT}
+$SSH_AGENT_MOUNT
       - $(yaml_path "$DATA/n8n/data:/home/node/${BIND_LABEL}")
       - $(yaml_path "$DATA/n8n/arquivos:/data/arquivos${BIND_LABEL}")
 
@@ -1105,7 +1109,7 @@ services:
       S3_ENABLED: "false"
 
     volumes:
-      - ${SSH_AGENT_MOUNT}
+$SSH_AGENT_MOUNT
       - $(yaml_path "$DATA/evolution-api:/evolution/instances${BIND_LABEL}")
 
     labels:
@@ -1412,6 +1416,34 @@ EOF_SEARXNG
 fi
 
 #############################################
+# WEB-QA
+#############################################
+
+if should_create_service "web-qa"; then
+  mkdir -p "$BASE/web-qa"
+  (umask 077; mkdir -p "$DATA/web-qa/artifacts")
+  cp -- "$SCRIPT_DIR/web-qa/"{Dockerfile,package.json,package-lock.json} "$BASE/web-qa/"
+  cp -R -- "$SCRIPT_DIR/web-qa/examples" "$BASE/web-qa/"
+  QA_USER="$(id -u):$(id -g)"
+  QA_USERNS=""
+  if [[ "$LAB_ENGINE" == podman ]]; then
+    QA_USER="1000:1000"
+    QA_USERNS="$N8N_USERNS"
+  fi
+  while IFS= read -r line; do
+    case "$line" in
+      *'@IMAGE_PREFIX@'*) line="${line//@IMAGE_PREFIX@/$LOCAL_IMAGE_PREFIX}" ;;
+      *'@USER@'*) line="${line//@USER@/$QA_USER}" ;;
+      *'@USERNS@'*) [[ -n "$QA_USERNS" ]] || continue; line="$QA_USERNS" ;;
+      *'@DOMAIN@'*) line="${line//@DOMAIN@/$DOMAIN}" ;;
+      *'@HTTP_PORT@'*) line="${line//@HTTP_PORT@/$HTTP_PORT}" ;;
+      *'@ARTIFACTS_MOUNT@'*) line="      - $(yaml_path "$DATA/web-qa/artifacts:/artifacts${BIND_LABEL}")" ;;
+    esac
+    printf '%s\n' "$line"
+  done < "$SCRIPT_DIR/web-qa/docker-compose.yml.in" > "$BASE/web-qa/docker-compose.yml"
+fi
+
+#############################################
 # START-ALL
 #############################################
 
@@ -1455,8 +1487,6 @@ done
 cat >> "$BASE/scripts/start-all.sh" <<'EOF_START_END'
 )
 
-echo "Ignorando minio: imagem configurada indisponível; escolha uma alternativa antes de reativá-lo."
-
 FAILED_SERVICES=()
 
 for service in "${SERVICES[@]}"
@@ -1475,7 +1505,7 @@ do
   fi
 
   echo "Subindo $service"
-  if ! (cd -- "$BASE/$service" && engine_compose up -d --build); then
+  if ! (cd -- "$BASE/$service" && engine_compose_up_retry); then
     FAILED_SERVICES+=("$service")
   fi
 done
@@ -1498,7 +1528,6 @@ STOP_SERVICES=()
 for ((index=${#START_SERVICES[@]}-1; index>=0; index--)); do
   STOP_SERVICES+=("${START_SERVICES[index]}")
 done
-STOP_SERVICES+=(minio)
 
 cat > "$BASE/scripts/stop-all.sh" <<'EOF_STOP'
 #!/usr/bin/env bash

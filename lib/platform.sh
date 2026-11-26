@@ -52,8 +52,10 @@ lab_require_docker() {
 lab_ssh_agent_mount_source() {
   if [[ "$(lab_platform)" == "macos" ]]; then
     printf '%s\n' '/run/host-services/ssh-auth.sock'
+  elif [[ -n "${SSH_AUTH_SOCK:-}" && -S "$SSH_AUTH_SOCK" ]]; then
+    printf '%s\n' "$SSH_AUTH_SOCK"
   else
-    printf '%s\n' '${SSH_AUTH_SOCK:-/dev/null}'
+    printf '%s' ''
   fi
 }
 
@@ -76,7 +78,16 @@ lab_check_ssh_agent() {
   fi
 
   if [[ -S "${SSH_AUTH_SOCK:-}" ]]; then
-    echo "Agente SSH disponível para os containers de aplicação."
+    if command -v ssh-add >/dev/null 2>&1; then
+      ssh-add -l >/dev/null 2>&1
+      case "$?" in
+        0) echo "Agente SSH disponível para os containers de aplicação." ;;
+        1) echo "Aviso: agente SSH encontrado, mas nenhuma chave está carregada; Git por SSH ficará indisponível $context." >&2 ;;
+        *) echo "Aviso: não foi possível consultar o agente SSH; Git por SSH pode ficar indisponível $context." >&2 ;;
+      esac
+    else
+      echo "Agente SSH disponível para os containers de aplicação."
+    fi
   else
     echo "Aviso: agente SSH não encontrado; Git por SSH ficará indisponível $context." >&2
     echo "Carregue a chave com ssh-add e inicie os containers novamente." >&2

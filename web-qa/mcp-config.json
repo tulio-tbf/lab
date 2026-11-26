@@ -1,0 +1,18 @@
+{
+  "browser": {
+    "browserName": "chromium",
+    "remoteEndpoint": {
+      "endpoint": "ws://web-qa:3000/",
+      "browserName": "chromium"
+    },
+    "launchOptions": {
+      "headless": true
+    },
+    "contextOptions": {
+      "viewport": {
+        "width": 1440,
+        "height": 900
+      }
+    }
+  }
+}
