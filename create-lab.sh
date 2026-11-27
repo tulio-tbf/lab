@@ -234,6 +234,11 @@ services_memory_mb() {
   echo "$total"
 }
 
+yaml_path() {
+  # Aspas simples tornam seguros espaços, dois-pontos e caracteres especiais.
+  printf "'%s'" "${1//\'/\'\'}"
+}
+
 if ((CHECK_HARDWARE_ONLY)); then
   lab_hw_detect "$DATA"
   lab_hw_report "$OLLAMA_MODE" "$(services_memory_mb "${ALL_SERVICES[@]}")" 1
@@ -249,11 +254,6 @@ SSH_AGENT_MOUNT=""
 if [[ -n "$SSH_AGENT_SOURCE" ]]; then
   SSH_AGENT_MOUNT="      - $(yaml_path "$SSH_AGENT_SOURCE:/run/host-ssh-agent")"
 fi
-
-yaml_path() {
-  # Aspas simples tornam seguros espaços, dois-pontos e caracteres especiais.
-  printf "'%s'" "${1//\'/\'\'}"
-}
 
 LAB_CHOICES=("${ALL_SERVICES[@]}")
 if [[ -n "$SERVICES_ARG" ]]; then
